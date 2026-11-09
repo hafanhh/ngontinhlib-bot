@@ -20,8 +20,14 @@ from telegram.error import NetworkError
 import bot
 from services import gemini_agent, notion_search
 
-# Importing bot switches on its real logging (a terminal handler and logs/bot.log). Remove those
-# handlers, so this test's deliberate errors never end up in your real log file.
+# Switch logging on the way the bot does, but with a temporary log folder (never your real log),
+# so the "quiet http libraries" checks below test the real setup. Then remove the handlers,
+# so this test's deliberate errors are not printed.
+import tempfile
+
+import logtools
+
+logtools.setup_logging(log_dir=tempfile.mkdtemp())
 for handler in list(logging.getLogger().handlers):
     logging.getLogger().removeHandler(handler)
     handler.close()

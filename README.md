@@ -60,7 +60,7 @@ Mỗi câu hỏi ghi lần lượt: câu hỏi đến, thời gian lần gọi G
 thời gian Notion, lượng token, "Reply sent" và tổng thời gian. Ví dụ dòng token:
 `usage: model=... prompt=871 output=33 function_calls=1 model_requests=1 total=904`
 (`model_requests` là số lần gọi Gemini, hữu ích để theo dõi giới hạn miễn phí 15 lần/phút).
-Xem tổng kết hôm nay: `python log_summary.py`. Xem thử các dòng log mà không cần mạng: `python -m tests.demo_log`.
+Xem tổng kết hôm nay: `python -m logtools.summary` (thêm ngày như `2026-11-09` để xem ngày khác). Xem thử các dòng log mà không cần mạng: `python -m tests.demo_log`.
 
 Bot nhớ 5 câu hỏi gần nhất trong mỗi cuộc trò chuyện (mất khi tắt bot, chỉ nhớ điều kiện đã tìm chứ không nhớ tên truyện),
 nên bạn có thể hỏi nối tiếp như "chỉ lấy truyện đã hoàn thôi".

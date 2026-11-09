@@ -27,15 +27,19 @@ from notion_client import errors as notion_errors
 from telegram import Update
 from telegram.ext import Application
 
-import logging_setup
+from unittest import mock
 
-# Send the log file to a temporary folder for this test
-TMP = tempfile.mkdtemp()
-logging_setup.LOG_DIR = TMP
-logging_setup.LOG_FILE = os.path.join(TMP, "bot.log")
+import logtools
+from logtools import paths, summary
+from logtools.setup import read_level
 
 import bot
 from services import gemini_agent as g
+from services import notion_write
+
+# Switch logging on, with the log file in a temporary folder (importing bot does NOT switch it on)
+TMP = tempfile.mkdtemp()
+LOG_FILE = logtools.setup_logging(log_dir=TMP)
 
 failures = []
 
@@ -47,7 +51,7 @@ def check(label: str, condition: bool) -> None:
 
 
 def read_log() -> str:
-    with open(logging_setup.LOG_FILE, encoding="utf-8") as handle:
+    with open(LOG_FILE, encoding="utf-8") as handle:
         return handle.read()
 
 
@@ -97,12 +101,12 @@ file_handler = [h for h in logging.getLogger().handlers if type(h).__name__ == "
 check("file rotates at about 1 MB and keeps 3 old copies", file_handler.maxBytes == 1_000_000 and file_handler.backupCount == 3)
 for value, expected in (("DEBUG", logging.DEBUG), ("warning", logging.WARNING), ("nonsense", logging.INFO), ("", logging.INFO)):
     os.environ["LOG_LEVEL"] = value
-    check(f"LOG_LEVEL={value!r} -> {logging.getLevelName(expected)}", logging_setup._read_level() == expected)
+    check(f"LOG_LEVEL={value!r} -> {logging.getLevelName(expected)}", read_level() == expected)
 del os.environ["LOG_LEVEL"]
-check("LOG_LEVEL missing -> INFO", logging_setup._read_level() == logging.INFO)
+check("LOG_LEVEL missing -> INFO", read_level() == logging.INFO)
 os.environ["LOG_LEVEL"] = "INFO"
 check("httpx/httpx2 loggers stay quiet", all(logging.getLogger(n).level >= logging.WARNING for n in ("httpx", "httpcore", "httpx2", "httpcore2")))
-check("mask_user_id keeps 4 digits", logging_setup.mask_user_id(123456789) == "1234***")
+check("mask_user_id keeps 4 digits", logtools.mask_user_id(123456789) == "1234***")
 
 print("--- one question, ok ---")
 
@@ -126,7 +130,7 @@ check("Incoming has the masked user id, the length and only 50 characters",
       and long_question[:50] in lines[0] and long_question[:51] not in lines[0])
 check("Done has status=ok and the total time", re.search(r"Done: status=ok total_time=\d+\.\d\ds$", lines[-1]) is not None)
 check("the user still gets the answer", replies == ["câu trả lời"])
-check("after the question the req_id is cleared", logging_setup.get_req_id() == "-")
+check("after the question the req_id is cleared", logtools.get_req_id() == "-")
 lines2, _ = ask("câu hai", good_answer)
 check("the next question gets a different req_id", REQ.match(lines2[0]).group(2) != next(iter(ids)))
 
@@ -232,7 +236,8 @@ check("... and no reply is sent", stranger.message.replies == [])
 recorded = []
 Application.add_handler = lambda self, handler, group=0: recorded.append((handler, group))
 Application.run_polling = lambda self: None
-bot.main()
+with mock.patch.object(bot.logtools, "setup_logging"):  # main() would switch the REAL logging on
+    bot.main()
 
 
 def raw_update(user_id):
@@ -263,23 +268,29 @@ for secret in (FAKE_BOT_TOKEN, "FAKE-bot-token", os.environ["NOTION_TOKEN"], os.
 check("... they are replaced by ***", "***" in content)
 check("normal text next to a hidden secret is kept", "&a=1" in content and "failed calling" in content)
 
-print("--- log_summary.py ---")
-import log_summary
-
-log_summary.LOG_FILE = logging_setup.LOG_FILE
+print("--- logtools.summary ---")
 import contextlib
 import io
-import sys
 
 buffer = io.StringIO()
-sys.argv = ["log_summary.py"]
 with contextlib.redirect_stdout(buffer):
-    log_summary.main()
+    summary.main([], log_file=LOG_FILE)
 output = buffer.getvalue()
 questions_today = len(re.findall(r"\] Incoming:", read_log()))
 check("it counts today's questions", f"Số câu hỏi:          {questions_today}" in output)
 check("it counts errors (5 failed questions + 1 reply Telegram refused)", "Số câu bị lỗi:       6" in output)
 check("it adds up tokens (the 7+3 test line)", "Tổng prompt tokens:  7" in output and "Tổng output tokens:  3" in output)
+
+print("--- the logtools package: one place for paths, nothing touched outside the temp folder ---")
+check("setup_logging(log_dir=...) put bot.log in that folder", LOG_FILE == os.path.join(TMP, "bot.log"))
+check("all log paths are in the logs/ folder, defined only in logtools/paths.py",
+      paths.BOT_LOG == os.path.join(paths.LOG_DIR, "bot.log") and paths.WRITES_LOG == os.path.join(paths.LOG_DIR, "writes.log"))
+check("the Notion write log takes its path from logtools.paths", notion_write.WRITE_LOG_PATH == paths.WRITES_LOG)
+check("the package exports what bot.py uses", all(hasattr(logtools, n) for n in logtools.__all__))
+check("the old root-level files are gone",
+      not any(os.path.exists(os.path.join(paths.PROJECT_ROOT, f)) for f in ("logging_setup.py", "log_summary.py")))
+check("this test logged only to its temporary folder, never to the real logs/bot.log",
+      all(getattr(h, "baseFilename", None) != paths.BOT_LOG for h in logging.getLogger().handlers))
 
 print()
 print("ALL CHECKS PASSED" if not failures else f"{len(failures)} CHECK(S) FAILED: {failures}")

@@ -29,14 +29,14 @@ os.environ.update(
 import httpx2
 from google.genai import errors as gemini_errors
 
-import logging_setup
-
-logging_setup.LOG_DIR = tempfile.mkdtemp()  # file log tạm
-logging_setup.LOG_FILE = os.path.join(logging_setup.LOG_DIR, "bot.log")
+import logtools
 
 import bot
 from services import gemini_agent as g
 from services import render
+
+# Bật logging, file log nằm trong thư mục tạm (không đụng vào logs/bot.log thật)
+LOG_FILE = logtools.setup_logging(log_dir=tempfile.mkdtemp())
 
 # ---- Notion giả: trả về 7 truyện, hoặc 0 truyện nếu tag là "Không có" ----
 STORY = {"name": "Truyện mẫu", "author": "A", "chapters": 10, "tags": ["Sủng"], "link": "https://example.com"}
@@ -116,4 +116,4 @@ except RuntimeError:
     logging.getLogger("demo").exception("thử ghi token %s và key %s", os.environ["NOTION_TOKEN"], os.environ["GEMINI_API_KEY"])
 
 print("\nXong. Các dòng log ở trên là đúng thứ bạn sẽ thấy trong logs/bot.log khi chạy bot thật.")
-print("(Muốn xem file log của demo: " + logging_setup.LOG_FILE + ")")
+print("(Muốn xem file log của demo: " + LOG_FILE + ")")

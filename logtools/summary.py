@@ -1,7 +1,7 @@
 """Print a short summary of today's questions from logs/bot.log.
 
-Run:  python log_summary.py            (today)
-      python log_summary.py 2026-11-09 (another day)
+Run:  python -m logtools.summary              (today)
+      python -m logtools.summary 2026-11-09   (another day)
 
 It only READS the log. It looks at three kinds of lines the bot writes for each question:
   "... [k3x9a] Incoming: ..."        -> counts a question
@@ -10,12 +10,11 @@ It only READS the log. It looks at three kinds of lines the bot writes for each 
 """
 
 import glob
-import os
 import re
 import sys
 from datetime import date
 
-LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "bot.log")
+from logtools import paths
 
 # Pieces of a log line we look for
 RE_INCOMING = re.compile(r"\] Incoming:")
@@ -29,13 +28,16 @@ def number_after(name: str, line: str):
     return int(match.group(1)) if match else None
 
 
-def main() -> None:
-    day = sys.argv[1] if len(sys.argv) > 1 else date.today().isoformat()
+def main(argv: list = None, log_file: str = None) -> None:
+    """argv: the day as 2026-11-09 (default: today). log_file: only for tests."""
+    argv = sys.argv[1:] if argv is None else argv
+    day = argv[0] if argv else date.today().isoformat()
+    log_file = log_file or paths.BOT_LOG
 
     # bot.log plus the older copies (bot.log.1, .2, .3), in case the log rotated today
-    files = sorted(glob.glob(LOG_FILE + "*"))
+    files = sorted(glob.glob(log_file + "*"))
     if not files:
-        raise SystemExit(f"Không tìm thấy {LOG_FILE}. Hãy chạy bot và hỏi vài câu trước.")
+        raise SystemExit(f"Không tìm thấy {log_file}. Hãy chạy bot và hỏi vài câu trước.")
 
     questions = errors = 0
     prompt_tokens = output_tokens = 0

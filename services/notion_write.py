@@ -18,6 +18,7 @@ import os
 from datetime import datetime
 from functools import lru_cache
 
+from logtools.paths import WRITES_LOG
 from services import notion_search
 from services.notion_search import (
     COL_AUTHOR,
@@ -39,8 +40,7 @@ COL_RECORD_AUDIO = "Record Audio"
 COL_DATE = "Date"
 RECORD_AUDIO_VALUES = ["Not started", "In progress", "Done"]
 MAX_TEXT_LENGTH = 2000  # Notion's limit for one piece of text
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WRITE_LOG_PATH = os.path.join(PROJECT_ROOT, "logs", "writes.log")
+WRITE_LOG_PATH = WRITES_LOG  # logs/writes.log (the path is defined in logtools/paths.py)
 
 # The columns /edit may change: key -> (Vietnamese label shown to you, Notion column name).
 # A column that is not in this list can never be changed by the bot.

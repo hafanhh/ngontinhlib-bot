@@ -23,13 +23,13 @@ try:
 except ImportError:  # (only if a future google-genai stops using it)
     httpx2 = None
 
-import logging_setup
+import logtools
 from flows import build_flows
 from services.gemini_agent import answer_question
 
-# Logging is set up in logging_setup.py: terminal + logs/bot.log, level from LOG_LEVEL in .env,
-# a req_id on every line of a question, and secrets hidden. Keep httpx quiet there (URLs hold tokens).
-logging_setup.setup_logging()
+# Logging lives in the logtools/ package. It is switched on at the start of main()
+# (terminal + logs/bot.log, level from LOG_LEVEL in .env, a req_id on every line of a question,
+# secrets hidden).
 logger = logging.getLogger(__name__)
 
 # Read the secrets from the .env file into environment variables
@@ -124,12 +124,12 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """Runs for any normal text message: asks Gemini (which searches Notion) and replies."""
     text = update.message.text
     # A new short id for this question: it appears in every log line of the question
-    logging_setup.new_req_id()
+    logtools.new_req_id()
     started = time.monotonic()
     status = "error"  # becomes "ok" only if the answer was made AND sent to Telegram
     # Only the length and the first 50 characters of the question are logged (repr hides line breaks)
     logger.info("Incoming: user=%s length=%d text=%r",
-                logging_setup.mask_user_id(update.effective_user.id), len(text), text[:50])
+                logtools.mask_user_id(update.effective_user.id), len(text), text[:50])
     try:
         # Show "typing..." while we work
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
@@ -153,7 +153,7 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         status = "ok" if answered else "error"
     finally:
         logger.info("Done: status=%s total_time=%.2fs", status, time.monotonic() - started)
-        logging_setup.clear_req_id()
+        logtools.clear_req_id()
 
 
 async def reject_stranger(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -161,10 +161,11 @@ async def reject_stranger(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     (user id hidden) and sends NO reply, so strangers still get no sign of life."""
     user = update.effective_user
     logger.warning("Blocked: message from a user that is not allowed (user=%s)",
-                   logging_setup.mask_user_id(user.id) if user else "unknown")
+                   logtools.mask_user_id(user.id) if user else "unknown")
 
 
 def main() -> None:
+    logtools.setup_logging()  # first thing: so everything below is logged
     # Create the bot application using the token
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_error_handler(on_error)
