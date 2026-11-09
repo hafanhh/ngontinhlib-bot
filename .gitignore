@@ -1,0 +1,20 @@
+# Secrets - never commit these
+.env
+
+# Virtual environment (can be recreated from requirements.txt)
+.venv/
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# macOS folder settings
+.DS_Store
+
+# Logs: bot.log (errors) and writes.log (every change made to Notion, contains your notes)
+logs/
+bot.log
+*.log
+
+# Personal planning document (not for GitHub)
+*.docx
