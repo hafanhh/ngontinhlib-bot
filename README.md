@@ -1,16 +1,17 @@
-# Bot Telegram tìm truyện trong Notion
+# Telegram bot for searching novels in Notion
 
-Bot nhận câu hỏi tự nhiên trên Telegram, nhờ Gemini hiểu câu hỏi (chọn bộ lọc), tìm trong bảng truyện
-Notion rồi chương trình tự in danh sách bằng tiếng Việt (Gemini chỉ được hỏi 1 lần mỗi câu để tiết kiệm token). Ngoài việc tìm truyện, bot còn có lệnh `/add` (thêm truyện mới) và
-`/edit` (sửa truyện) để ghi vào Notion, và chỉ ghi sau khi bạn bấm **Xác nhận**. Bot không bao giờ
-xóa truyện. `/ping` trả lời "pong".
-Bot chỉ phản hồi đúng một người dùng (ID trong `TELEGRAM_USER_ID`).
+The bot takes natural-language questions on Telegram, uses Gemini to understand the question (it picks the filters),
+searches the Notion novel table, and then the program itself prints the story list in Vietnamese (Gemini is asked only
+once per question to save tokens). Besides searching, the bot has the commands `/add` (add a new story) and
+`/edit` (edit a story) that write to Notion, and it only writes after you press **Xác nhận** (Confirm). The bot never
+deletes stories. `/ping` replies "pong".
+The bot only responds to one user (the ID in `TELEGRAM_USER_ID`).
 
-## Cài đặt lần đầu
+## First-time setup
 
-Cần Python 3.11 trở lên (dự án đang chạy trên Python 3.13). Kiểm tra bằng `python3 --version`.
+You need Python 3.11 or newer (the project runs on Python 3.13). Check with `python3 --version`.
 
-1. Tạo môi trường ảo (venv) và cài thư viện, trong thư mục dự án:
+1. Create a virtual environment (venv) and install the libraries, inside the project folder:
 
    ```bash
    python3 -m venv .venv
@@ -18,94 +19,73 @@ Cần Python 3.11 trở lên (dự án đang chạy trên Python 3.13). Kiểm t
    pip install -r requirements.txt
    ```
 
-2. Tạo file `.env` từ file mẫu và chỉ cho phép riêng bạn đọc nó:
+2. Create the `.env` file from the example file and make it readable only by you:
 
    ```bash
    cp .env.example .env
    chmod 600 .env
    ```
 
-3. Mở `.env` và điền giá trị của bạn:
-   - `BOT_TOKEN`: token lấy từ @BotFather trên Telegram.
-   - `TELEGRAM_USER_ID`: ID số của bạn (lấy từ bot @userinfobot).
-   - `NOTION_TOKEN`: token của Notion integration (notion.so/profile/integrations). Nhớ share bảng truyện cho integration.
-   - `NOTION_DATA_SOURCE_ID`: ID data source của bảng truyện.
-   - `GEMINI_API_KEY`: khóa API lấy từ Google AI Studio (aistudio.google.com).
-   - `GEMINI_MODEL` (tùy chọn): tên model Gemini. Để trống thì dùng mặc định `gemini-3.6-flash`.
-   - `LOG_LEVEL` (tùy chọn): mức chi tiết của nhật ký (`DEBUG`, `INFO`, `WARNING`, `ERROR`). Để trống thì dùng `INFO`.
+3. Open `.env` and fill in your own values:
+   - `BOT_TOKEN`: the token from @BotFather on Telegram.
+   - `TELEGRAM_USER_ID`: your numeric ID (get it from the @userinfobot bot).
+   - `NOTION_TOKEN`: the token of your Notion integration (notion.so/profile/integrations). Remember to share the novel table with the integration.
+   - `NOTION_DATA_SOURCE_ID`: the data source ID of the novel table.
+   - `GEMINI_API_KEY`: the API key from Google AI Studio (aistudio.google.com).
+   - `GEMINI_MODEL` (optional): the Gemini model name. Leave empty to use the default `gemini-3.6-flash`.
+   - `LOG_LEVEL` (optional): how detailed the log is (`DEBUG`, `INFO`, `WARNING`, `ERROR`). Leave empty to use `INFO`.
 
-   Không chia sẻ file `.env` cho ai và không đưa lên GitHub.
+   Do not share the `.env` file with anyone and do not push it to GitHub.
 
-## Kích hoạt môi trường ảo (venv)
+## Activate the virtual environment (venv)
 
-Sau lần cài đặt đầu, mỗi lần mở terminal mới bạn chỉ cần chạy lệnh này trong thư mục dự án:
+After the first setup, each time you open a new terminal you only need to run this command in the project folder:
 
 ```bash
 source .venv/bin/activate
 ```
 
-Khi thành công, đầu dòng lệnh sẽ có chữ `(.venv)`.
-Để thoát venv: `deactivate`.
+When it works, the start of the command line shows `(.venv)`.
+To leave the venv: `deactivate`.
 
-## Chạy bot
+## Run the bot
 
 ```bash
 python bot.py
 ```
 
-Dừng bot bằng `Ctrl+C`. Nhật ký được ghi vào file `logs/bot.log` (không đưa lên GitHub), mỗi dòng có
-dạng `giờ MỨC [mã câu hỏi] nội dung`. Mức chi tiết chỉnh bằng `LOG_LEVEL` trong `.env`
-(`INFO` mặc định, `DEBUG` chi tiết hơn). Token và key luôn bị che thành `***`.
-Mỗi câu hỏi ghi lần lượt: câu hỏi đến, thời gian lần gọi Gemini, bộ lọc Gemini chọn, kết quả và
-thời gian Notion, lượng token, "Reply sent" và tổng thời gian. Ví dụ dòng token:
+Stop the bot with `Ctrl+C`. The log is written to the file `logs/bot.log` (not pushed to GitHub), and each line looks like
+`time LEVEL [question id] message`. The detail level is set with `LOG_LEVEL` in `.env`
+(`INFO` by default, `DEBUG` for more detail). Tokens and keys are always hidden as `***`.
+For each question the log records, in order: the incoming question, the time of the Gemini call, the filters Gemini chose,
+the Notion result and time, the token usage, "Reply sent" and the total time. Example token line:
 `usage: model=... prompt=871 output=33 function_calls=1 model_requests=1 total=904`
-(`model_requests` là số lần gọi Gemini, hữu ích để theo dõi giới hạn miễn phí 15 lần/phút).
-Xem tổng kết hôm nay: `python -m logtools.summary` (thêm ngày như `2026-11-09` để xem ngày khác). Xem thử các dòng log mà không cần mạng: `python -m tests.demo_log`.
+(`model_requests` is the number of Gemini calls, useful for tracking the free limit of 15 calls per minute).
+See today's summary with `python -m logtools.summary` (add a date like `2026-11-09` for another day). To preview the log lines without a network, run `python -m tests.demo_log`.
 
-Bot nhớ 5 câu hỏi gần nhất trong mỗi cuộc trò chuyện (mất khi tắt bot, chỉ nhớ điều kiện đã tìm chứ không nhớ tên truyện),
-nên bạn có thể hỏi nối tiếp như "chỉ lấy truyện đã hoàn thôi".
+The bot remembers the last 5 questions in each chat (lost when the bot stops, and it remembers only the conditions that were searched, not story names),
+so you can ask follow-ups such as "chỉ lấy truyện đã hoàn thôi" (only completed stories).
 
-## Thử nghiệm
+## Add a new story: /add
 
-Cách bot gợi ý truyện: mỗi lần bạn hỏi, bot xáo trộn ngẫu nhiên các truyện khớp rồi chọn 10 truyện,
-nên hỏi lại sẽ ra gợi ý khác. Khi bạn xin gợi ý mà không nói rõ tiến độ đọc, bot mặc định chỉ tìm
-truyện **chưa đọc** (và nói rõ điều đó). Nói "xem thêm" để xem 10 truyện tiếp theo của cùng lần tìm.
+Type `/add` in Telegram and the bot asks, one by one: name, link, author, number of chapters (1 or more),
+tags (tap buttons to choose) and status. At the end the bot shows a summary, and when you press **Xác nhận**
+the new story is added to Notion. Type `/cancel` at any time to stop (nothing has been written yet).
 
-Thử trong terminal (không cần Telegram):
+Defaults: Status = Full, Reading Status = Not started, Record Audio = Not started,
+Note and Date are left empty. If the story is already in the table (same name or link), the bot warns you.
 
-```bash
-python -m tests.test_search   # thử tìm trực tiếp trong Notion
-python -m tests.test_gemini   # hỏi 4 câu mẫu qua Gemini
-```
+Note: to add stories, the Notion integration must have the **Insert content** capability turned on.
 
-Các bài kiểm tra tự động (không ghi gì vào Notion của bạn): `python -m tests.test_write`,
-`tests.test_add_flow`, `tests.test_edit_flow`, `tests.test_paging`, `tests.test_errors`, `tests.test_usage`.
+## Edit a story: /edit
 
-Rồi mở Telegram, chat với bot của bạn:
+Type `/edit`, enter part of a story name or an author name, then pick the story from the list.
+The bot shows the current values and asks which column you want to edit (name, author, chapters, tags, link,
+Status, Reading Status, Record Audio, note, date). You enter the new value, the bot shows
+"Before / After" and only writes to Notion when you press **Xác nhận**. After each edit, the bot asks
+"Which column next?" until you press **Xong** (Done). Only the note and the date can be left empty.
+Type `/cancel` to stop: changes you already confirmed are kept.
 
-- Gửi `/ping` → bot trả lời `pong`
-- Hỏi tự nhiên, ví dụ: `Gợi ý truyện cổ đại cung đấu đã hoàn`
+The bot never deletes stories. To drop a story, change its Reading Status to Drop.
 
-## Thêm truyện mới: /add
-
-Gõ `/add` trong Telegram, bot sẽ hỏi lần lượt: tên, link, tác giả, số chương (từ 1 trở lên),
-tags (bấm nút để chọn) và status. Cuối cùng bot hiện bản tóm tắt, bạn bấm **Xác nhận** thì
-truyện mới được thêm vào Notion. Gõ `/cancel` bất cứ lúc nào để dừng (chưa ghi gì).
-
-Mặc định: Status = Full, Reading Status = Not started, Record Audio = Not started,
-Ghi chú và Ngày để trống. Nếu truyện đã có trong bảng (trùng tên hoặc link), bot sẽ cảnh báo.
-
-Lưu ý: muốn thêm được truyện, integration Notion phải được bật quyền **Insert content**.
-
-## Sửa truyện: /edit
-
-Gõ `/edit`, nhập một phần tên truyện hoặc tên tác giả, rồi chọn truyện trong danh sách.
-Bot hiện các giá trị hiện tại và hỏi bạn muốn sửa cột nào (tên, tác giả, số chương, tags, link,
-Status, Reading Status, Record Audio, ghi chú, ngày). Bạn nhập giá trị mới, bot hiện
-"Trước / Sau" và chỉ ghi vào Notion khi bạn bấm **Xác nhận**. Sau mỗi lần sửa, bot hỏi
-"Sửa cột nào nữa?" cho đến khi bạn bấm **Xong**. Chỉ ghi chú và ngày có thể để trống.
-Gõ `/cancel` để dừng: những thay đổi đã xác nhận trước đó vẫn được giữ.
-
-Bot không bao giờ xóa truyện. Muốn bỏ một truyện, hãy đổi Reading Status thành Drop.
-
-Lưu ý: muốn sửa được, integration Notion phải được bật quyền **Update content**.
+Note: to edit stories, the Notion integration must have the **Update content** capability turned on.
