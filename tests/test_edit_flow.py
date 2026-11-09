@@ -203,8 +203,8 @@ class Chat:
         return [p for name, p in calls if name == "answerCallbackQuery" and p.get("show_alert")]
 
     def confirm_data(self, calls):
-        """The callback_data of the 'Xác nhận' button in the last keyboard."""
-        return next(d for label, d in self.keyboard(calls) if "Xác nhận" in label)
+        """The callback_data of the 'Confirm' button in the last keyboard."""
+        return next(d for label, d in self.keyboard(calls) if "Confirm" in label)
 
 
 async def new_chat():
@@ -246,9 +246,9 @@ async def main():
     calls = chat.new_calls()
     out = "\n".join(chat.texts(calls))
     check("shows the chosen book and ALL its current values", all(x in out for x in (
-        "Truyện A", "Lựu Cảnh", "30", "Sủng", "https://truyenfull.vn/a/", "Reading Status (tiến độ đọc): Not started",
-        "Ghi chú: ghi chú cũ", "2024-03-16")))
-    check("offers every editable column plus 'Xong'", [d for l, d in chat.keyboard(calls)]
+        "Truyện A", "Lựu Cảnh", "30", "Sủng", "https://truyenfull.vn/a/", "Reading Status (reading progress): Not started",
+        "Note: ghi chú cũ", "2024-03-16")))
+    check("offers every editable column plus 'Done'", [d for l, d in chat.keyboard(calls)]
           == [f"edit:col:{k}" for k in w.EDITABLE_COLUMNS] + ["edit:finish"])
 
     # -- a column with a fixed list of values
@@ -256,7 +256,7 @@ async def main():
     calls = chat.new_calls()
     labels = [l for l, d in chat.keyboard(calls)]
     check("fixed-list column shows its values with hints, current one marked",
-          "● Not started - chưa đọc" in labels and "Done - đã đọc xong" in labels)
+          "● Not started - not read yet" in labels and "Done - finished" in labels)
     await chat.press("edit:choice:2")   # Done
     calls = chat.new_calls()
     out = "\n".join(chat.texts(calls))
@@ -269,7 +269,7 @@ async def main():
     check("value written is Done", notion.updates[0][1]["Reading Status "]["status"]["name"] == "Done")
     out = "\n".join(chat.texts(calls))
     check("says it worked, then asks which column NEXT", "Đã cập nhật" in out and "Sửa cột nào nữa?" in out)
-    check("the column list now shows the new value", "Reading Status (tiến độ đọc): Done" in out)
+    check("the column list now shows the new value", "Reading Status (reading progress): Done" in out)
 
     # -- a free-text column (note), with validation of the typed value
     await chat.press("edit:col:note")
@@ -296,7 +296,7 @@ async def main():
     writes_before = len(notion.updates)
     await chat.press("edit:discard")
     out = "\n".join(chat.texts(chat.new_calls()))
-    check("'Không sửa' writes nothing and returns to the column list", len(notion.updates) == writes_before
+    check("'Keep old value' writes nothing and returns to the column list", len(notion.updates) == writes_before
           and "Chưa ghi gì" in out and "Sửa cột nào nữa?" in out)
     await chat.press("edit:col:chapters")
     chat.new_calls()
@@ -313,7 +313,7 @@ async def main():
     await chat.press(tag_button("Sủng"))      # un-select the only tag
     chat.new_calls()
     await chat.press("edit:tags_done")
-    check("tags: 'Xong' with nothing chosen shows an alert", len(chat.alerts(chat.new_calls())) == 1)
+    check("tags: 'Done' with nothing chosen shows an alert", len(chat.alerts(chat.new_calls())) == 1)
     await chat.press(tag_button("Ngọt"))
     chat.new_calls()
     await chat.press("edit:tags_done")
@@ -348,11 +348,11 @@ async def main():
     await chat.say("khong-phai-link")
     check("a link without http is refused", any("http" in t and "Nhập lại" in t for t in chat.texts(chat.new_calls())))
     await chat.press("edit:back")
-    check("'Chọn cột khác' goes back to the column list", any("Sửa cột nào nữa?" in t for t in chat.texts(chat.new_calls())))
+    check("'Choose another column' goes back to the column list", any("Sửa cột nào nữa?" in t for t in chat.texts(chat.new_calls())))
 
     await chat.press("edit:finish")
     out = "\n".join(chat.texts(chat.new_calls()))
-    check("'Xong' lists what was changed", "Đã sửa 5 thay đổi" in out and "Reading Status" in out and "Tags" in out and "Ngày" in out)
+    check("'Done' lists what was changed", "Đã sửa 5 thay đổi" in out and "Reading Status" in out and "Tags" in out and "Date" in out)
     check("5 writes in total, each one column only", len(notion.updates) == 5 and all(len(p) == 1 for _, p in notion.updates))
     check("no write ever touched another story", {pid for pid, _ in notion.updates} == {"p1"})
     check("the other story is unchanged", notion.store["p2"] == make_page("p2", "Truyện B", author="Khác", chapters=12))

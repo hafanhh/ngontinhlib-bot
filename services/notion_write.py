@@ -45,16 +45,16 @@ WRITE_LOG_PATH = WRITES_LOG  # logs/writes.log (the path is defined in logtools/
 # The columns /edit may change: key -> (Vietnamese label shown to you, Notion column name).
 # A column that is not in this list can never be changed by the bot.
 EDITABLE_COLUMNS = {
-    "name": ("Tên truyện", COL_NAME),
-    "author": ("Tác giả", COL_AUTHOR),
-    "chapters": ("Số chương", COL_CHAPTERS),
+    "name": ("Name", COL_NAME),
+    "author": ("Author", COL_AUTHOR),
+    "chapters": ("Chapters", COL_CHAPTERS),
     "tags": ("Tags", COL_TAGS),
     "link": ("Link", COL_LINK),
-    "status": ("Status (tình trạng truyện)", COL_STATUS),
-    "reading_status": ("Reading Status (tiến độ đọc)", COL_READING_STATUS),
+    "status": ("Status (story state)", COL_STATUS),
+    "reading_status": ("Reading Status (reading progress)", COL_READING_STATUS),
     "record_audio": ("Record Audio", COL_RECORD_AUDIO),
-    "note": ("Ghi chú", COL_NOTE),
-    "date": ("Ngày", COL_DATE),
+    "note": ("Note", COL_NOTE),
+    "date": ("Date", COL_DATE),
 }
 # Only these two may be emptied. Every other column must always have a value.
 CLEARABLE = {"note", "date"}

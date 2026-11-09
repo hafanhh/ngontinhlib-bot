@@ -31,7 +31,7 @@ def build_flows(only_me, owner_id: int, friendly_error) -> ConversationHandler:
             return await edit_cancel(update, context)
         return await add_cancel(update, context)
 
-    # The Hủy button of /add (a button, not a command) stays as it is
+    # The Cancel button of /add (a button, not a command) stays as it is
     button_fallbacks = [h for h in add.fallbacks + edit.fallbacks if isinstance(h, CallbackQueryHandler)]
 
     with warnings.catch_warnings():

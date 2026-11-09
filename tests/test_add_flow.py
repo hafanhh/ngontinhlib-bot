@@ -157,7 +157,7 @@ class Chat:
         await self.app.process_update(Update.de_json({"update_id": self._next(), "callback_query": query}, self.app.bot))
 
     def confirm_data(self):
-        """callback_data of the 'Xác nhận' button in the most recent summary."""
+        """callback_data of the 'Confirm' button in the most recent summary."""
         for keyboard in reversed(self.request.keyboards):
             for data in keyboard:
                 if data.startswith("add:confirm:"):
@@ -242,7 +242,7 @@ async def main():
 
     await chat.press("add:tags_done")
     calls = chat.new_calls()
-    check("'Xong' with no tag chosen shows an alert", len(chat.alerts(calls)) == 1)
+    check("'Done' with no tag chosen shows an alert", len(chat.alerts(calls)) == 1)
     await chat.press(tag_button("Sủng"))
     await chat.press(tag_button("Cổ Đại"))
     calls = chat.new_calls()

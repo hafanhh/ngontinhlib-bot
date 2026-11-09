@@ -1,8 +1,8 @@
 """The /edit conversation: change one column of one story at a time.
 
 Flow: find the book (type part of its name or author) -> choose it -> choose a column
--> give the new value -> see "before -> after" -> Xác nhận -> written -> "which column
-next?" ... until you press "Xong".
+-> give the new value -> see "before -> after" -> Confirm -> written -> "which column
+next?" ... until you press "Done".
 
 How it stays safe:
 - Gemini is not involved at all.
@@ -51,9 +51,9 @@ CHOICES = {
     "record_audio": w.RECORD_AUDIO_VALUES,
 }
 HINTS = {
-    "status": {"Full": "đã hoàn", "In progress": "đang ra", "Drop": "bỏ dở"},
-    "reading_status": {"Not started": "chưa đọc", "In progress": "đang đọc", "Done": "đã đọc xong",
-                       "Beginning + End": "chỉ đọc đầu và cuối", "Drop": "đã bỏ"},
+    "status": {"Full": "completed", "In progress": "ongoing", "Drop": "abandoned"},
+    "reading_status": {"Not started": "not read yet", "In progress": "reading", "Done": "finished",
+                       "Beginning + End": "read only start and end", "Drop": "dropped"},
     "record_audio": {},
 }
 TEXT_PROMPTS = {
@@ -185,12 +185,12 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         for key, (label, _) in w.EDITABLE_COLUMNS.items():
             lines.append(f"{label}: {show(d['story'][key])}")
         lines.append("")
-        lines.append("Sửa cột nào? (bấm \"Xong\" nếu không sửa nữa)" if first
-                     else "Sửa cột nào nữa? (bấm \"Xong\" nếu không)")
+        lines.append("Sửa cột nào? (bấm \"Done\" nếu không sửa nữa)" if first
+                     else "Sửa cột nào nữa? (bấm \"Done\" nếu không)")
         buttons = [InlineKeyboardButton(label, callback_data=f"edit:col:{key}")
                    for key, (label, _) in w.EDITABLE_COLUMNS.items()]
         rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-        rows.append([InlineKeyboardButton("✅ Xong, không sửa nữa", callback_data="edit:finish")])
+        rows.append([InlineKeyboardButton("✅ Done, no more edits", callback_data="edit:finish")])
         await update.effective_message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows))
         return PICK_COLUMN
 
@@ -225,14 +225,14 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
                 text = f"{value} - {hint}" if hint else value
                 mark = "● " if value == current else ""
                 rows.append([InlineKeyboardButton(mark + text, callback_data=f"edit:choice:{index}")])
-            rows.append([InlineKeyboardButton("↩️ Chọn cột khác", callback_data="edit:back")])
+            rows.append([InlineKeyboardButton("↩️ Choose another column", callback_data="edit:back")])
             await query.message.reply_text("Chọn giá trị mới:", reply_markup=InlineKeyboardMarkup(rows))
             return VALUE_CHOICE
 
         row = []
         if column in w.CLEARABLE:
-            row.append(InlineKeyboardButton("🗑 Xóa nội dung", callback_data="edit:clear"))
-        row.append(InlineKeyboardButton("↩️ Chọn cột khác", callback_data="edit:back"))
+            row.append(InlineKeyboardButton("🗑 Clear value", callback_data="edit:clear"))
+        row.append(InlineKeyboardButton("↩️ Choose another column", callback_data="edit:back"))
         await query.message.reply_text(TEXT_PROMPTS[column], reply_markup=InlineKeyboardMarkup([row]))
         return VALUE_TEXT
 
@@ -274,7 +274,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
     # Tags: tap buttons to select / deselect
 
     def tags_text(d: dict) -> str:
-        return ("Chọn TAGS mới: bấm để chọn hoặc bỏ chọn, xong thì bấm \"Xong\".\n"
+        return ("Chọn TAGS mới: bấm để chọn hoặc bỏ chọn, xong thì bấm \"Done\".\n"
                 f"Đã chọn: {', '.join(d['tag_sel']) or '(chưa chọn)'}")
 
     def tags_keyboard(d: dict) -> InlineKeyboardMarkup:
@@ -284,8 +284,8 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
             mark = "✅ " if tag.strip().casefold() in selected else ""
             buttons.append(InlineKeyboardButton(mark + tag.strip(), callback_data=f"edit:tag:{index}"))
         rows = [buttons[i:i + TAGS_PER_ROW] for i in range(0, len(buttons), TAGS_PER_ROW)]
-        rows.append([InlineKeyboardButton("✔️ Xong", callback_data="edit:tags_done"),
-                     InlineKeyboardButton("↩️ Chọn cột khác", callback_data="edit:back")])
+        rows.append([InlineKeyboardButton("✔️ Done", callback_data="edit:tags_done"),
+                     InlineKeyboardButton("↩️ Choose another column", callback_data="edit:back")])
         return InlineKeyboardMarkup(rows)
 
     async def toggle_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -353,8 +353,8 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         d["new_value"] = new_value
         d["nonce"] = secrets.token_hex(4)  # makes this confirm button single-use and unmistakable
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Xác nhận", callback_data=f"edit:confirm:{d['nonce']}"),
-            InlineKeyboardButton("↩️ Không sửa", callback_data="edit:discard"),
+            InlineKeyboardButton("✅ Confirm", callback_data=f"edit:confirm:{d['nonce']}"),
+            InlineKeyboardButton("↩️ Keep old value", callback_data="edit:discard"),
         ]])
         await update.effective_message.reply_text(
             f"Sửa truyện: {d['name']}\nCột: {label}\n"

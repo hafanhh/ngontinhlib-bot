@@ -3,7 +3,7 @@
 How it stays safe:
 - Gemini is not involved at all. The bot asks fixed questions and checks every answer
   with the same rules as notion_write.py.
-- Nothing is written until you press "Xác nhận" on the final summary.
+- Nothing is written until you press "Confirm" on the final summary.
 - A button only works while its conversation is active, so each button press happens once.
 - Every handler works only for the owner's Telegram user ID.
 """
@@ -37,7 +37,7 @@ NAME, LINK, DUPLICATE, AUTHOR, CHAPTERS, TAGS, STATUS, CONFIRM = range(8)
 DATA_KEY = "add"  # where the answers so far are kept (per user, in memory)
 TAGS_PER_ROW = 3
 
-CANCEL_BUTTON = InlineKeyboardButton("❌ Hủy", callback_data="add:cancel")
+CANCEL_BUTTON = InlineKeyboardButton("❌ Cancel", callback_data="add:cancel")
 
 
 def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHandler:
@@ -109,7 +109,7 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
                              f"(trùng {' và '.join(dup['same'])})\n  {dup['link']}")
             lines.append("\nBạn vẫn muốn thêm truyện này?")
             keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("➕ Vẫn thêm", callback_data="add:dup_yes"), CANCEL_BUTTON,
+                InlineKeyboardButton("➕ Add anyway", callback_data="add:dup_yes"), CANCEL_BUTTON,
             ]])
             await update.message.reply_text("\n".join(lines), reply_markup=keyboard)
             return DUPLICATE
@@ -162,7 +162,7 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
 
     def tags_text(d: dict) -> str:
         chosen = ", ".join(t.strip() for t in d["tags"]) or "(chưa chọn)"
-        return ("5/6 - Chọn TAGS: bấm để chọn hoặc bỏ chọn, xong thì bấm \"Xong\".\n"
+        return ("5/6 - Chọn TAGS: bấm để chọn hoặc bỏ chọn, xong thì bấm \"Done\".\n"
                 f"Đã chọn: {chosen}")
 
     def tags_keyboard(d: dict) -> InlineKeyboardMarkup:
@@ -171,7 +171,7 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
             mark = "✅ " if tag in d["tags"] else ""
             buttons.append(InlineKeyboardButton(mark + tag.strip(), callback_data=f"add:tag:{index}"))
         rows = [buttons[i:i + TAGS_PER_ROW] for i in range(0, len(buttons), TAGS_PER_ROW)]
-        rows.append([InlineKeyboardButton("✔️ Xong", callback_data="add:tags_done"), CANCEL_BUTTON])
+        rows.append([InlineKeyboardButton("✔️ Done", callback_data="add:tags_done"), CANCEL_BUTTON])
         return InlineKeyboardMarkup(rows)
 
     async def toggle_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -206,9 +206,9 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         chosen = ", ".join(t.strip() for t in d["tags"])
         await query.edit_message_text(f"5/6 - Tags: {chosen}")
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Full - đã hoàn (mặc định)", callback_data="add:status:Full")],
-            [InlineKeyboardButton("In progress - đang ra", callback_data="add:status:In progress")],
-            [InlineKeyboardButton("Drop - bỏ dở", callback_data="add:status:Drop")],
+            [InlineKeyboardButton("Full - completed (default)", callback_data="add:status:Full")],
+            [InlineKeyboardButton("In progress - ongoing", callback_data="add:status:In progress")],
+            [InlineKeyboardButton("Drop - abandoned", callback_data="add:status:Drop")],
             [CANCEL_BUTTON],
         ])
         await query.message.reply_text("6/6 - Chọn STATUS (tình trạng của truyện):", reply_markup=keyboard)
@@ -242,7 +242,7 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         # was left open) can never confirm this new data, and a used button is dead.
         d["nonce"] = secrets.token_hex(4)
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Xác nhận", callback_data=f"add:confirm:{d['nonce']}"), CANCEL_BUTTON,
+            InlineKeyboardButton("✅ Confirm", callback_data=f"add:confirm:{d['nonce']}"), CANCEL_BUTTON,
         ]])
         await query.message.reply_text(summary, reply_markup=keyboard)
         return CONFIRM

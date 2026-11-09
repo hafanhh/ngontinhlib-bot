@@ -1,9 +1,9 @@
 # Telegram bot for searching novels in Notion
 
 The bot takes natural-language questions on Telegram, uses Gemini to understand the question (it picks the filters),
-searches the Notion novel table, and then the program itself prints the story list in Vietnamese (Gemini is asked only
+searches the Notion novel table, and then the program itself prints the story list (Gemini is asked only
 once per question to save tokens). Besides searching, the bot has the commands `/add` (add a new story) and
-`/edit` (edit a story) that write to Notion, and it only writes after you press **Xác nhận** (Confirm). The bot never
+`/edit` (edit a story) that write to Notion, and it only writes after you press **Confirm**. The bot never
 deletes stories. `/ping` replies "pong".
 The bot only responds to one user (the ID in `TELEGRAM_USER_ID`).
 
@@ -64,12 +64,12 @@ the Notion result and time, the token usage, "Reply sent" and the total time. Ex
 See today's summary with `python -m logtools.summary` (add a date like `2026-11-09` for another day). To preview the log lines without a network, run `python -m tests.demo_log`.
 
 The bot remembers the last 5 questions in each chat (lost when the bot stops, and it remembers only the conditions that were searched, not story names),
-so you can ask follow-ups such as "chỉ lấy truyện đã hoàn thôi" (only completed stories).
+so you can ask follow-ups such as "only completed stories".
 
 ## Add a new story: /add
 
 Type `/add` in Telegram and the bot asks, one by one: name, link, author, number of chapters (1 or more),
-tags (tap buttons to choose) and status. At the end the bot shows a summary, and when you press **Xác nhận**
+tags (tap buttons to choose) and status. At the end the bot shows a summary, and when you press **Confirm**
 the new story is added to Notion. Type `/cancel` at any time to stop (nothing has been written yet).
 
 Defaults: Status = Full, Reading Status = Not started, Record Audio = Not started,
@@ -82,8 +82,8 @@ Note: to add stories, the Notion integration must have the **Insert content** ca
 Type `/edit`, enter part of a story name or an author name, then pick the story from the list.
 The bot shows the current values and asks which column you want to edit (name, author, chapters, tags, link,
 Status, Reading Status, Record Audio, note, date). You enter the new value, the bot shows
-"Before / After" and only writes to Notion when you press **Xác nhận**. After each edit, the bot asks
-"Which column next?" until you press **Xong** (Done). Only the note and the date can be left empty.
+"Before / After" and only writes to Notion when you press **Confirm**. After each edit, the bot asks
+"Which column next?" until you press **Done**. Only the note and the date can be left empty.
 Type `/cancel` to stop: changes you already confirmed are kept.
 
 The bot never deletes stories. To drop a story, change its Reading Status to Drop.
