@@ -1,7 +1,7 @@
 # Bot Telegram tìm truyện trong Notion
 
-Bot nhận câu hỏi tự nhiên trên Telegram, nhờ Gemini hiểu câu hỏi, tìm trong bảng truyện Notion
-rồi trả lời bằng tiếng Việt. Ngoài việc tìm truyện, bot còn có lệnh `/add` (thêm truyện mới) và
+Bot nhận câu hỏi tự nhiên trên Telegram, nhờ Gemini hiểu câu hỏi (chọn bộ lọc), tìm trong bảng truyện
+Notion rồi chương trình tự in danh sách bằng tiếng Việt (Gemini chỉ được hỏi 1 lần mỗi câu để tiết kiệm token). Ngoài việc tìm truyện, bot còn có lệnh `/add` (thêm truyện mới) và
 `/edit` (sửa truyện) để ghi vào Notion, và chỉ ghi sau khi bạn bấm **Xác nhận**. Bot không bao giờ
 xóa truyện. `/ping` trả lời "pong".
 Bot chỉ phản hồi đúng một người dùng (ID trong `TELEGRAM_USER_ID`).
@@ -32,6 +32,7 @@ Cần Python 3.11 trở lên (dự án đang chạy trên Python 3.13). Kiểm t
    - `NOTION_DATA_SOURCE_ID`: ID data source của bảng truyện.
    - `GEMINI_API_KEY`: khóa API lấy từ Google AI Studio (aistudio.google.com).
    - `GEMINI_MODEL` (tùy chọn): tên model Gemini. Để trống thì dùng mặc định `gemini-3.6-flash`.
+   - `LOG_LEVEL` (tùy chọn): mức chi tiết của nhật ký (`DEBUG`, `INFO`, `WARNING`, `ERROR`). Để trống thì dùng `INFO`.
 
    Không chia sẻ file `.env` cho ai và không đưa lên GitHub.
 
@@ -52,12 +53,16 @@ Khi thành công, đầu dòng lệnh sẽ có chữ `(.venv)`.
 python bot.py
 ```
 
-Dừng bot bằng `Ctrl+C`. Khi có lỗi, chi tiết được ghi vào file `logs/bot.log` (không đưa lên GitHub).
-Mỗi câu hỏi cũng ghi một dòng lượng token Gemini đã dùng, ví dụ
-`usage: requests=2 prompt=3203 output=163 total=3366` (`requests` là số lần gọi Gemini, hữu ích
-để theo dõi giới hạn miễn phí 15 lần/phút).
+Dừng bot bằng `Ctrl+C`. Nhật ký được ghi vào file `logs/bot.log` (không đưa lên GitHub), mỗi dòng có
+dạng `giờ MỨC [mã câu hỏi] nội dung`. Mức chi tiết chỉnh bằng `LOG_LEVEL` trong `.env`
+(`INFO` mặc định, `DEBUG` chi tiết hơn). Token và key luôn bị che thành `***`.
+Mỗi câu hỏi ghi lần lượt: câu hỏi đến, thời gian lần gọi Gemini, bộ lọc Gemini chọn, kết quả và
+thời gian Notion, lượng token, "Reply sent" và tổng thời gian. Ví dụ dòng token:
+`usage: model=... prompt=871 output=33 function_calls=1 model_requests=1 total=904`
+(`model_requests` là số lần gọi Gemini, hữu ích để theo dõi giới hạn miễn phí 15 lần/phút).
+Xem tổng kết hôm nay: `python log_summary.py`. Xem thử các dòng log mà không cần mạng: `python -m tests.demo_log`.
 
-Bot nhớ khoảng 10 câu hỏi gần nhất trong mỗi cuộc trò chuyện (mất khi tắt bot),
+Bot nhớ 5 câu hỏi gần nhất trong mỗi cuộc trò chuyện (mất khi tắt bot, chỉ nhớ điều kiện đã tìm chứ không nhớ tên truyện),
 nên bạn có thể hỏi nối tiếp như "chỉ lấy truyện đã hoàn thôi".
 
 ## Thử nghiệm
