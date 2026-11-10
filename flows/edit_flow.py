@@ -31,6 +31,7 @@ from telegram.ext import (
 )
 from telegram.warnings import PTBUserWarning
 
+from flows import flowlog
 from services import notion_search
 from services import notion_write as w
 
@@ -105,6 +106,10 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         story and its current values, the column being edited, the one-time confirm code."""
         return context.user_data.setdefault(DATA_KEY, {})
 
+    def log(context, name: str, text: str = "", *args, **kwargs) -> None:
+        """Log one /edit step (see flows/flowlog.py)."""
+        flowlog.step(logger, context, DATA_KEY, name, text, *args, **kwargs)
+
     async def drop_buttons(update: Update) -> None:
         """Remove the buttons from the message that was just answered."""
         try:
@@ -125,25 +130,30 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         """/edit: begin a fresh conversation and ask which story to change. Closes /add if open."""
         context.user_data.pop("add", None)  # leave /add if it was open (see flows/__init__.py)
         context.user_data[DATA_KEY] = {}  # always start from a clean slate
+        lists = ", ".join(str(notion_search.list_number(sid) or "?") for sid in notion_search.all_sources())
+        flowlog.begin(update, context, DATA_KEY, logger, lists=lists)
         await update.message.reply_text(
-            "Sửa truyện. Gõ /cancel bất cứ lúc nào để dừng.\n\n"
+            f"Sửa truyện (tìm trong List {lists}). Gõ /cancel bất cứ lúc nào để dừng.\n\n"
             "Nhập một phần TÊN truyện hoặc TÊN TÁC GIẢ để tìm:"
         )
         return SEARCH
 
+    @flowlog.tracked(DATA_KEY)
     async def got_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Step 1: search list 1 by part of the name or author and show up to 10 books as buttons.
-        Typing again simply searches again."""
+        """Step 1: search every list, by part of the name or author, and show
+        up to 10 books as buttons (each with its ID, like L3-91). Typing again searches again."""
         text = update.message.text.strip()
         try:
             found = await asyncio.to_thread(notion_search.find_books, text)
         except ValueError as error:
+            log(context, "search", "rejected (%s)", error)
             await update.message.reply_text(str(error))
             return SEARCH
         except Exception as error:
             return await end_with_error(update, context, error, "Lỗi khi tìm truyện để sửa")
 
         books = found["books"]
+        log(context, "search", "length=%d results=%d more_than_shown=%s", len(text), len(books), found["has_more"])
         if not books:
             await update.message.reply_text(
                 f"Không tìm thấy truyện nào có \"{text}\" trong tên hoặc tác giả.\n"
@@ -154,7 +164,8 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         data(context)["books"] = books
         rows = []
         for index, book in enumerate(books):
-            label = f"{index + 1}. {book['name']} - {book['author']} ({book['chapters']} chương)"
+            where = book["code"] or f"List {book['list']}"  # the ID (L3-91), or the list if it has no ID
+            label = f"{where} · {book['name']} - {book['author']} ({book['chapters']} chương)"
             rows.append([InlineKeyboardButton(label[:60], callback_data=f"edit:book:{index}")])
         intro = "Chọn truyện cần sửa:"
         if found["has_more"]:
@@ -165,6 +176,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         await update.message.reply_text(intro, reply_markup=InlineKeyboardMarkup(rows))
         return PICK_BOOK
 
+    @flowlog.tracked(DATA_KEY)
     async def pick_book(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """A book button was tapped: read the story's current values, then show the column list."""
         if not is_owner(update):
@@ -179,12 +191,16 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         try:
             story = await asyncio.to_thread(w.get_story, book["id"])
         except ValueError as error:   # e.g. the story was deleted in Notion meanwhile
+            logger.warning("/edit cannot open this story: %s", error)
             await query.edit_message_text(f"Không sửa được truyện này: {error}")
             return PICK_BOOK
         except Exception as error:
             return await end_with_error(update, context, error, "Lỗi khi đọc truyện")
 
-        d.update(page_id=book["id"], name=story["name"], story=story, changes=[], nonce=None)
+        d.update(page_id=book["id"], source_id=book["source_id"], list=book["list"], code=book["code"],
+                 name=story["name"], story=story, changes=[], nonce=None)
+        log(context, "book", "picked name=%r list=%s id=%s page_id=%s", flowlog.short(story["name"]),
+            book["list"], book["code"] or "-", book["id"])
         await query.edit_message_text(f"Đã chọn: {story['name']}")
         return await ask_column(update, context, first=True)
 
@@ -194,7 +210,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         """Step 2: show the story's current values with one button per editable column,
         plus 'Done'. `first` only changes the wording of the question."""
         d = data(context)
-        lines = [f"Truyện: {d['name']}", ""]
+        lines = [f"Truyện: {d['name']}", f"ID: {d['code'] or '(chưa có)'} (List {d['list']})", ""]
         for key, (label, _) in w.EDITABLE_COLUMNS.items():
             lines.append(f"{label}: {show(d['story'][key])}")
         lines.append("")
@@ -207,6 +223,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         await update.effective_message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows))
         return PICK_COLUMN
 
+    @flowlog.tracked(DATA_KEY)
     async def pick_column(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """A column button was tapped: ask for the new value in the way that fits the column
         (tag buttons, a list of allowed values, or typed text)."""
@@ -222,11 +239,13 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         label = w.EDITABLE_COLUMNS[column][0]
         current = d["story"][column]
         d["column"] = column
+        log(context, "column", "chosen=%s", column)
         await query.edit_message_text(f"Cột: {label}\nHiện tại: {show(current)}")
 
         if column == "tags":
             try:
-                d["valid_tags"] = await asyncio.to_thread(notion_search.get_valid_tags)
+                # the tags of the list THIS story is in (every list has its own tag options)
+                d["valid_tags"] = await asyncio.to_thread(notion_search.get_valid_tags, d["source_id"])
             except Exception as error:
                 return await end_with_error(update, context, error, "Lỗi khi lấy danh sách tag")
             d["tag_sel"] = list(current)
@@ -251,16 +270,19 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         await query.message.reply_text(TEXT_PROMPTS[column], reply_markup=InlineKeyboardMarkup([row]))
         return VALUE_TEXT
 
+    @flowlog.tracked(DATA_KEY)
     async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """'Choose another column' was pressed: forget this column and show the column list again."""
         if not is_owner(update):
             return VALUE_TEXT
         await update.callback_query.answer()
         await drop_buttons(update)
+        log(context, "column", "back to the column list")
         return await ask_column(update, context)
 
     # ---- 3. the new value ------------------------------------------------------------
 
+    @flowlog.tracked(DATA_KEY)
     async def got_text_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Step 3 (typed columns): check the typed value with the same rules as the real write,
         then show 'before -> after'."""
@@ -275,10 +297,12 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
                 value = text
             w.build_column_update(column, value)  # the same rules as the real write
         except ValueError as error:
+            log(context, "value", "rejected column=%s (%s)", column, error)
             await update.message.reply_text(f"{error}\nNhập lại, hoặc bấm \"Chọn cột khác\" ở trên:")
             return VALUE_TEXT
         return await propose(update, context, value)
 
+    @flowlog.tracked(DATA_KEY)
     async def clear_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """'Clear value' was pressed. Only the note and the date may be emptied."""
         if not is_owner(update):
@@ -288,6 +312,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         await drop_buttons(update)
         if d.get("column") not in w.CLEARABLE:  # only note and date may be emptied
             return await ask_column(update, context)
+        log(context, "value", "column=%s cleared", d["column"])
         return await propose(update, context, None)
 
     # Tags: tap buttons to select / deselect
@@ -298,7 +323,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
                 f"Đã chọn: {', '.join(d['tag_sel']) or '(chưa chọn)'}")
 
     def tags_keyboard(d: dict) -> InlineKeyboardMarkup:
-        """The tag buttons: one per tag of list 1 (✅ on the selected ones), then Done and Back."""
+        """The tag buttons: one per tag of the story's list (✅ on the selected ones), then Done and Back."""
         selected = {t.strip().casefold() for t in d["tag_sel"]}
         buttons = []
         for index, tag in enumerate(d["valid_tags"]):
@@ -309,6 +334,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
                      InlineKeyboardButton("↩️ Choose another column", callback_data="edit:back")])
         return InlineKeyboardMarkup(rows)
 
+    @flowlog.tracked(DATA_KEY)
     async def toggle_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """A tag button was tapped: select the tag, or unselect it if it was already selected."""
         if not is_owner(update):
@@ -331,20 +357,24 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
             pass
         return VALUE_TAGS
 
+    @flowlog.tracked(DATA_KEY)
     async def tags_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """'Done' pressed on the tags: at least one tag is needed, then show 'before -> after'."""
         if not is_owner(update):
             return VALUE_TAGS
         d = data(context)
         if not d.get("tag_sel"):
+            log(context, "tags", "Done pressed with no tag chosen")
             await update.callback_query.answer("Hãy chọn ít nhất 1 tag.", show_alert=True)
             return VALUE_TAGS
         await update.callback_query.answer()
+        log(context, "tags", "done, selected=%d", len(d["tag_sel"]))
         await drop_buttons(update)
         return await propose(update, context, list(d["tag_sel"]))
 
     # Fixed-list columns: tap a value
 
+    @flowlog.tracked(DATA_KEY)
     async def pick_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """A value button was tapped (for the columns with a fixed list of values):
         show 'before -> after'."""
@@ -358,6 +388,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         except (IndexError, ValueError, KeyError):
             return VALUE_CHOICE
         await drop_buttons(update)
+        log(context, "value", "column=%s chosen=%s", d["column"], value)
         return await propose(update, context, value)
 
     # ---- 4. show before -> after and ask to confirm ------------------------------------
@@ -374,12 +405,14 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
 
         nothing_changes = (current in (None, "")) if new_value is None else same_value(column, new_value, current)
         if nothing_changes:
+            log(context, "proposal", "column=%s no change (new value equals the current one)", column)
             await update.effective_message.reply_text(
                 f"Giá trị mới giống giá trị hiện tại của cột {label}, nên không cần sửa."
             )
             return await ask_column(update, context)
 
         d["new_value"] = new_value
+        log(context, "proposal", "column=%s shown before -> after, waiting for Confirm (nothing written yet)", column)
         d["nonce"] = secrets.token_hex(4)  # makes this confirm button single-use and unmistakable
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Confirm", callback_data=f"edit:confirm:{d['nonce']}"),
@@ -392,16 +425,19 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         )
         return CONFIRM
 
+    @flowlog.tracked(DATA_KEY)
     async def discard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """'Keep old value' was pressed: drop this change (nothing was written) and show the columns."""
         if not is_owner(update):
             return CONFIRM
         data(context)["nonce"] = None
+        log(context, "proposal", "discarded (kept the old value, nothing written)")
         await update.callback_query.answer()
         await drop_buttons(update)
         await update.effective_message.reply_text("Đã bỏ thay đổi này. Chưa ghi gì vào Notion.")
         return await ask_column(update, context)
 
+    @flowlog.tracked(DATA_KEY)
     async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """The ONLY place that writes. Runs when the owner presses Confirm on 'before -> after'.
         The one-time code is checked and used up BEFORE the write, so an old or double-pressed
@@ -411,6 +447,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         query = update.callback_query
         d = data(context)
         if not d.get("nonce") or query.data.split(":")[2] != d["nonce"]:
+            logger.warning("/edit confirm refused: this button is old or was already used")
             await query.answer("Nút này đã cũ, hãy dùng tin nhắn mới nhất.", show_alert=True)
             return CONFIRM
         await query.answer()
@@ -419,6 +456,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
 
         column, label = d["column"], w.EDITABLE_COLUMNS[d["column"]][0]
         reply = update.effective_message.reply_text
+        logger.info("/edit confirm: writing column=%s to Notion", column)
         try:
             result = await asyncio.to_thread(w.update_story, d["page_id"], column, d["new_value"])
         except ValueError as error:   # e.g. the story was deleted in Notion meanwhile
@@ -448,11 +486,14 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         if column == "name":
             d["name"] = result["after"]
         d["changes"].append(f"{label}: {show(result['before'])} → {show(result['after'])}")
+        logger.info("/edit done: updated column=%s story=%r list=%s id=%s page_id=%s (change %d of this /edit)",
+                    column, flowlog.short(d["name"]), d["list"], d["code"] or "-", d["page_id"], len(d["changes"]))
         await reply(f"✅ Đã cập nhật {label}.")
         return await ask_column(update, context)
 
     # ---- finishing, cancelling, stray messages -------------------------------------------
 
+    @flowlog.tracked(DATA_KEY)
     async def finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """'Done' was pressed: end /edit and list the changes that were made."""
         if not is_owner(update):
@@ -461,6 +502,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         await update.callback_query.answer()
         await drop_buttons(update)
         changes = d.get("changes", [])
+        logger.info("/edit finished: %d change(s) made, total_time=%.1fs", len(changes), flowlog.elapsed(d))
         if changes:
             text = f"Xong. Đã sửa {len(changes)} thay đổi cho \"{d['name']}\":\n- " + "\n- ".join(changes)
         else:
@@ -468,20 +510,27 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         await update.effective_message.reply_text(text)
         return ConversationHandler.END
 
+    @flowlog.tracked(DATA_KEY)
     async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """/cancel: stop /edit. Changes confirmed earlier stay in Notion; an unconfirmed one is dropped."""
         if not is_owner(update):
             return ConversationHandler.END
-        done = len(context.user_data.pop(DATA_KEY, {}).get("changes", []))
+        d = context.user_data.pop(DATA_KEY, {})
+        done = len(d.get("changes", []))
+        logger.info("/edit cancelled at step '%s' after %.1fs: %d change(s) were already confirmed",
+                    flowlog.last_step(d), flowlog.elapsed(d), done)
         note = f" {done} thay đổi đã xác nhận trước đó vẫn được giữ trong Notion." if done else ""
         await update.effective_message.reply_text(
             "Đã dừng /edit. Thay đổi chưa xác nhận thì không được ghi." + note
         )
         return ConversationHandler.END
 
+    @flowlog.tracked(DATA_KEY)
     async def use_the_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Text typed while the bot waits for a button press. Without this, the text
         would fall through to Gemini."""
+        logger.info("/edit stray text at step '%s' (ignored: a button was expected)",
+                    flowlog.last_step(context.user_data.get(DATA_KEY)))
         await update.message.reply_text("Hãy bấm một nút ở trên, hoặc gõ /cancel để dừng.")
 
     # ---- put it together ---------------------------------------------------------------

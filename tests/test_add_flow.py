@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import tempfile
 
 import httpx
@@ -18,13 +19,13 @@ from telegram.request import BaseRequest
 
 from services import notion_search
 
-notion_search.EXTRA_SOURCE_IDS = []  # these tests use one list;
-notion_search.NOTION_ADD_DATA_SOURCE_ID = None  # test_multi_lists covers several
+notion_search.DATA_SOURCE_IDS = notion_search.DATA_SOURCE_IDS[:1]  # these tests use ONE list; test_multi_lists covers several
+notion_search.ADD_SOURCE_ID = None
 from services import notion_write as w
 from flows.add_flow import build_add_handler
 
 # Some tests cause errors on purpose; hide the bot's error logs so the output stays clean
-logging.disable(logging.CRITICAL)
+# (log lines are collected below by GrabLogs instead of being printed, so the output stays clean)
 
 OWNER, STRANGER = 111, 222
 failures = []
@@ -80,7 +81,7 @@ class FakeRequest(BaseRequest):
 
 IDS = w._tag_ids()          # real tag list (read-only), loaded before faking
 VALID_TAGS = notion_search.get_valid_tags()
-TABLE_ID = notion_search.NOTION_DATA_SOURCE_ID
+TABLE_ID = notion_search.main_source_id()
 
 
 def stored_story(name, link, page_id="old-1"):
@@ -122,6 +123,27 @@ notion = FakeNotion()
 w._client = lambda: notion
 notion_search._client = lambda: notion
 w.WRITE_LOG_PATH = os.path.join(tempfile.mkdtemp(), "writes.log")
+
+
+# ---- capture the log lines of the flows (with the log id that is current when they are written) ----
+import logtools
+
+captured = []   # (log id, message)
+
+
+class GrabLogs(logging.Handler):
+    def emit(self, record):
+        captured.append((logtools.get_req_id(), record.getMessage()))
+
+
+logging.getLogger().addHandler(GrabLogs())
+logging.getLogger().setLevel(logging.INFO)
+
+
+def lines_of(command: str, n: int = 0) -> list:
+    """All log lines of the n-th conversation of `command` ('/add' or '/edit')."""
+    starts = [rid for rid, m in captured if m.startswith(f"{command} started:")]
+    return [m for rid, m in captured if rid == starts[n]]
 
 
 # ---- driver: sends updates, reads what the bot answered -------------------------
@@ -288,6 +310,34 @@ async def main():
     await chat.press(confirm_button)
     check("pressing confirm a second time writes nothing more", len(notion.created) == 1)
 
+    print("--- the log of that /add ---")
+    mine = lines_of("/add")
+    text = "\n".join(mine)
+    check("one log id groups the whole conversation (every step has it)", len(mine) >= 14)
+    check("the start is logged with the user id hidden", mine[0].startswith("/add started: user=111***") and "target_list=" in mine[0])
+    for label, needle in (
+        ("name ok with its length", "/add name: ok length=17"),
+        ("a refused link", "/add link: rejected"),
+        ("link ok with only the website", "/add link: ok host=example.com"),
+        ("the duplicate check result", "/add duplicate check: found=0"),
+        ("author ok", "/add author: ok length="),
+        ("a refused chapter count", "/add chapters: rejected"),
+        ("chapters ok", "/add chapters: ok value=45"),
+        ("tag buttons shown", "/add tags: buttons shown"),
+        ("Done without a tag", "/add tags: Done pressed with no tag chosen"),
+        ("tags chosen", "/add tags: done, chosen=2"),
+        ("the status", "/add status: Full"),
+        ("the summary", "/add summary: shown, waiting for Confirm"),
+        ("the write starting", "/add confirm: writing to Notion"),
+        ("the Notion write line", "Notion write: add"),
+        ("the final result", "/add done: added name='Truyện thử nghiệm'"),
+    ):
+        check(f"log has: {label}", needle in text)
+    check("typing text at a button step is logged with the step", "/add stray text at step 'tags'" in text)
+    check("the typed link and author are NOT in the log", "https://example.com/abc" not in text and "Tác Giả Thử" not in text)
+    check("the lines come in the right order", text.index("/add name: ok") < text.index("/add link: ok")
+          < text.index("/add chapters: ok") < text.index("/add summary") < text.index("/add done"))
+
     # ---------------- other status ----------------
     print("--- status can be changed ---")
     notion.created.clear()
@@ -333,6 +383,8 @@ async def main():
     chat.new_calls()
     await chat.say("/cancel")
     check("/cancel stops the conversation", any("Đã hủy" in t for t in chat.texts(chat.new_calls())))
+    cancel_log = [m for rid, m in captured if m.startswith("/add cancelled")][-1]
+    check("the cancel is logged with the step where it stopped", "at step 'author'" in cancel_log and "nothing was written" in cancel_log)
     await chat.say("45")
     check("after cancelling, text goes back to Gemini", reached_gemini == ["45"])
     reached_gemini.clear()
@@ -420,6 +472,7 @@ async def main():
     await chat.press(old_confirm)
     calls = chat.new_calls()
     check("the OLD summary's button is refused with an alert and writes nothing", len(chat.alerts(calls)) == 1 and notion.created == [])
+    check("the refused old button is logged as a warning", any(m.startswith("/add confirm refused") for _, m in captured))
     await chat.press(new_confirm)
     check("the new button writes the NEW story, not the old one",
           len(notion.created) == 1 and notion.created[0]["properties"]["Name"]["title"][0]["text"]["content"] == "Truyện MỚI")
@@ -431,6 +484,8 @@ async def main():
 
     lines = open(w.WRITE_LOG_PATH, encoding="utf-8").read().splitlines()
     check("each real write was logged (3 successful adds)", len(lines) == 3)
+    check("writes.log has a readable date and time (like bot.log)",
+          re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", json.loads(lines[0])["time"]) is not None)
 
     print()
     print("ALL CHECKS PASSED" if not failures else f"{len(failures)} CHECK(S) FAILED: {failures}")

@@ -2,7 +2,8 @@
 
 A "context variable" is like a sticky note that follows the question around (also into the
 worker thread that talks to Gemini and Notion), so we never pass req_id by hand.
-"-" is shown for lines that are not part of a question (startup, /add, /edit...)."""
+"-" is shown for lines that are not part of a question (startup, errors outside a
+question...). A whole /add or /edit conversation also gets one id (see flows/flowlog.py)."""
 
 import contextvars
 import logging
@@ -18,6 +19,13 @@ def new_req_id() -> str:
     value = "".join(secrets.choice(_ID_CHARS) for _ in range(5))
     _req_id.set(value)
     return value
+
+
+def set_req_id(value: str) -> None:
+    """Make an id that was made earlier the current one again. /add and /edit need this:
+    every button press is handled separately, so each handler re-attaches the id of its
+    conversation to keep all the lines of one /add or /edit together."""
+    _req_id.set(value or "-")
 
 
 def clear_req_id() -> None:

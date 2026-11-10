@@ -9,10 +9,10 @@ import tempfile
 from services import notion_search
 from services import notion_write as w
 
-notion_search.EXTRA_SOURCE_IDS = []  # these tests are about ONE list; test_multi_lists covers several
-notion_search.NOTION_ADD_DATA_SOURCE_ID = None  # and /add writes to list 1 here
+notion_search.DATA_SOURCE_IDS = notion_search.DATA_SOURCE_IDS[:1]  # these tests use ONE list; test_multi_lists covers several
+notion_search.ADD_SOURCE_ID = None
 
-TABLE_ID = notion_search.NOTION_DATA_SOURCE_ID
+TABLE_ID = notion_search.main_source_id()
 failures = []
 
 
@@ -212,13 +212,17 @@ check("column not in the list (a made-up one)", raises(w.update_story, "page-1",
 check("Notion column name instead of key", raises(w.update_story, "page-1", "Reading Status ", "Done") is not None)
 check("bad reading status", raises(w.update_story, "page-1", "reading_status", "Finished") is not None)
 check("bad record audio", raises(w.update_story, "page-1", "record_audio", "Maybe") is not None)
-check("unknown tag", raises(w.update_story, "page-1", "tags", ["Ngôn tình"]) is not None)
 check("zero chapters", raises(w.update_story, "page-1", "chapters", 0) is not None)
 check("link without http", raises(w.update_story, "page-1", "link", "abc") is not None)
 check("not a date", raises(w.update_story, "page-1", "date", "hôm qua") is not None)
 check("no Notion call for any bad input", fake.pages.calls == [])
+# Tags are the exception: they are checked against the tags of the story's own list, so the
+# page is read first. Still, nothing is written.
+check("unknown tag", raises(w.update_story, "page-1", "tags", ["Ngôn tình"]) is not None)
+check("... and an unknown tag writes nothing", not [c for c in fake.pages.calls if c[0] == "update"])
+fake.pages.calls.clear()
 fake.pages.page["parent"] = {"type": "data_source_id", "data_source_id": "some-other-table"}
-check("refuses a page from another table", "không thuộc bảng" in (raises(w.update_story, "page-1", "note", "x") or ""))
+check("refuses a page from another table", "không thuộc các bảng" in (raises(w.update_story, "page-1", "note", "x") or ""))
 fake.pages.page["parent"] = {"type": "data_source_id", "data_source_id": TABLE_ID}
 fake.pages.page["in_trash"] = True
 check("refuses a deleted page", "đã bị xóa" in (raises(w.update_story, "page-1", "note", "x") or ""))

@@ -17,11 +17,14 @@ from telegram.ext import Application, MessageHandler, filters
 from telegram.request import BaseRequest
 
 from services import notion_search
+
+notion_search.DATA_SOURCE_IDS = notion_search.DATA_SOURCE_IDS[:1]  # these tests use ONE list; test_multi_lists covers several
+notion_search.ADD_SOURCE_ID = None
 from services import notion_write as w
 from flows.edit_flow import build_edit_handler
 
 # Some tests cause errors on purpose; hide the bot's error logs so the output stays clean
-logging.disable(logging.CRITICAL)
+# (log lines are collected below by GrabLogs instead of being printed, so the output stays clean)
 
 OWNER, STRANGER = 111, 222
 failures = []
@@ -73,7 +76,7 @@ class FakeRequest(BaseRequest):
 IDS = w._tag_ids()          # real tag list (read-only), loaded before faking
 NAME_OF = {tag_id: name for name, tag_id in IDS.items()}
 VALID_TAGS = notion_search.get_valid_tags()
-TABLE_ID = notion_search.NOTION_DATA_SOURCE_ID
+TABLE_ID = notion_search.main_source_id()
 
 
 def make_page(page_id, name, author="Lựu Cảnh", chapters=30, tags=("Sủng",), link="https://truyenfull.vn/a/"):
@@ -141,6 +144,27 @@ notion = FakeNotion()
 w._client = lambda: notion
 notion_search._client = lambda: notion
 w.WRITE_LOG_PATH = os.path.join(tempfile.mkdtemp(), "writes.log")
+
+
+# ---- capture the log lines of the flows (with the log id that is current when they are written) ----
+import logtools
+
+captured = []   # (log id, message)
+
+
+class GrabLogs(logging.Handler):
+    def emit(self, record):
+        captured.append((logtools.get_req_id(), record.getMessage()))
+
+
+logging.getLogger().addHandler(GrabLogs())
+logging.getLogger().setLevel(logging.INFO)
+
+
+def lines_of(command: str, n: int = 0) -> list:
+    """All log lines of the n-th conversation of `command` ('/add' or '/edit')."""
+    starts = [rid for rid, m in captured if m.startswith(f"{command} started:")]
+    return [m for rid, m in captured if rid == starts[n]]
 
 
 # ---- driver: sends updates, reads what the bot answered -------------------------
@@ -242,9 +266,11 @@ async def main():
     labels = [l for l, d in chat.keyboard(calls)]
     check("shows the matching books as buttons", [d for l, d in chat.keyboard(calls)] == ["edit:book:0", "edit:book:1"]
           and "Truyện A" in labels[0] and "Lựu Cảnh" in labels[0])
+    check("each book button starts with the list (here no ID column, so 'List 1')", all(l.startswith("List 1 · ") for l in labels))
     await chat.press("edit:book:0")
     calls = chat.new_calls()
     out = "\n".join(chat.texts(calls))
+    check("the chosen book shows its ID and list", "ID: (chưa có) (List 1)" in out)
     check("shows the chosen book and ALL its current values", all(x in out for x in (
         "Truyện A", "Lựu Cảnh", "30", "Sủng", "https://truyenfull.vn/a/", "Reading Status (reading progress): Not started",
         "Note: ghi chú cũ", "2024-03-16")))
@@ -357,6 +383,27 @@ async def main():
     check("no write ever touched another story", {pid for pid, _ in notion.updates} == {"p1"})
     check("the other story is unchanged", notion.store["p2"] == make_page("p2", "Truyện B", author="Khác", chapters=12))
 
+    print("--- the log of that /edit ---")
+    mine = lines_of("/edit")
+    text = "\n".join(mine)
+    check("one log id groups the whole conversation", len(mine) >= 20)
+    check("the start is logged with the user id hidden and the list", mine[0].startswith("/edit started: user=111***") and "lists=1" in mine[0])
+    for label, needle in (
+        ("the search", "/edit search: length=3 results=2"),
+        ("the picked book", "/edit book: picked name='Truyện A'"),
+        ("a column chosen", "/edit column: chosen=reading_status"),
+        ("a value chosen", "/edit value: column=reading_status chosen=Done"),
+        ("a proposal waiting for Confirm", "/edit proposal: column=reading_status shown before -> after"),
+        ("the write starting", "/edit confirm: writing column=reading_status"),
+        ("the Notion write line", "Notion write: update"),
+        ("the done line", "/edit done: updated column=reading_status story='Truyện A'"),
+        ("a refused value", "/edit value: rejected column=link"),
+        ("going back", "/edit column: back to the column list"),
+        ("finishing", "/edit finished: 5 change(s) made"),
+    ):
+        check(f"log has: {label}", needle in text)
+    check("the typed text is NOT in the log", "Tên mới của truyện" not in text.replace("story='Tên mới của truyện'", "") and "khong-phai-link" not in text)
+
     # ---------------- search ----------------
     print("--- finding the book ---")
     notion.reset()
@@ -419,6 +466,8 @@ async def main():
     await chat.say("/cancel")
     check("/cancel stops and says nothing unconfirmed was written",
           any("Đã dừng" in t and "chưa xác nhận" in t for t in chat.texts(chat.new_calls())) and notion.updates == [])
+    cancel_log = [m for rid, m in captured if m.startswith("/edit cancelled")][-1]
+    check(f"the cancel is logged with the step where it stopped ({cancel_log})", "at step 'proposal'" in cancel_log and "0 change(s)" in cancel_log)
     await chat.say("45")
     check("after cancelling, text goes back to Gemini", reached_gemini == ["45"])
     reached_gemini.clear()

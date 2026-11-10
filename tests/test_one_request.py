@@ -14,6 +14,9 @@ from google import genai
 from services import gemini_agent as g
 from services import notion_search
 
+notion_search.DATA_SOURCE_IDS = notion_search.DATA_SOURCE_IDS[:1]  # these tests use ONE list; test_multi_lists covers several
+notion_search.ADD_SOURCE_ID = None
+
 failures = []
 
 

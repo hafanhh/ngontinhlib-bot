@@ -38,6 +38,7 @@ except ImportError:  # (only if a future google-genai stops using it)
 
 import logtools
 from flows import build_flows
+from services import notion_search
 from services.gemini_agent import answer_question
 
 # Logging lives in the logtools/ package. It is switched on at the start of main()
@@ -177,9 +178,25 @@ async def reject_stranger(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                    logtools.mask_user_id(user.id) if user else "unknown")
 
 
+def log_notion_lists() -> None:
+    """Write which Notion lists are in use to the log (so a wrong .env is easy to spot)."""
+    def numbers(ids):
+        return ", ".join(str(notion_search.list_number(i) or "?") for i in ids) or "-"
+
+    logger.info("Notion lists: %d lists (%s) used for search and /edit | /add writes to: %s",
+                len(notion_search.all_sources()), numbers(notion_search.all_sources()),
+                numbers([notion_search.add_source_id()]))
+    # Settings that used to exist: say so, instead of silently ignoring them
+    for old_key in ("NOTION_EXTRA_DATA_SOURCE_IDS", "NOTION_EDIT_DATA_SOURCE_ID"):
+        if os.getenv(old_key):
+            logger.warning("%s in .env is NOT used any more. Put ALL your list IDs, separated by "
+                           "commas, in NOTION_DATA_SOURCE_ID (see .env.example).", old_key)
+
+
 def main() -> None:
     """Start the bot: switch on logging, register the handlers, then keep polling Telegram."""
     logtools.setup_logging()  # first thing: so everything below is logged
+    log_notion_lists()
     # Create the bot application using the token
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_error_handler(on_error)

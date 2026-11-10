@@ -4,7 +4,8 @@ Safety rules built into this file:
 - There is no delete/archive function, and none will be added.
 - add_story only creates a new row. update_story changes ONE column of ONE existing
   row per call, and only columns listed in EDITABLE_COLUMNS.
-- update_story refuses any page that is not a live row of the novel table.
+- update_story refuses any page that is not a live row of one of our lists
+  (NOTION_DATA_SOURCE_ID); a page of any other table in Notion is never touched.
 - Every write is appended to writes.log (with before/after values) so it can be
   undone by hand.
 
@@ -23,12 +24,14 @@ from logtools.paths import WRITES_LOG
 from services import notion_search
 from services.notion_search import (
     COL_AUTHOR,
+    COL_ID,
     COL_CHAPTERS,
     COL_LINK,
     COL_NAME,
     COL_READING_STATUS,
     COL_STATUS,
     COL_TAGS,
+    id_label,
     READING_STATUS_VALUES,
     STATUS_VALUES,
     _match_option,
@@ -67,9 +70,9 @@ def _client():
 
 
 def _tag_ids(source_id: str = None) -> dict:
-    """Map each real tag name of ONE list to its Notion option id (None = list 1).
+    """Map each real tag name of ONE list to its Notion option id (None = the first list).
     Every list has its own tag options, so use the list the story is written in."""
-    return _fetch_tag_ids(source_id or notion_search.NOTION_DATA_SOURCE_ID)
+    return _fetch_tag_ids(source_id or notion_search.main_source_id())
 
 
 @lru_cache(maxsize=None)
@@ -111,7 +114,7 @@ def _check_link(link: str) -> str:
 def _tags_property(tags, source_id: str = None) -> dict:
     """Check the tags and build the Notion value. Unknown tags are rejected
     (this raises ValueError listing the valid tags). source_id = the list the story
-    is in (None = list 1, where /edit works)."""
+    is in (None = the first list)."""
     ids = _tag_ids(source_id)
     chosen = []
     for tag in tags:
@@ -190,9 +193,11 @@ def build_add_properties(name, author, chapters, tags, link, status="Full"):
     }
 
 
-def build_column_update(column: str, value) -> dict:
+def build_column_update(column: str, value, source_id: str = None) -> dict:
     """Build the Notion properties for changing ONE column. `column` is a key of
-    EDITABLE_COLUMNS. For note and date, an empty value (None or '') clears the column."""
+    EDITABLE_COLUMNS. For note and date, an empty value (None or '') clears the column.
+    source_id = the list the story is in; only the tags column needs it (every list has its
+    own tag options)."""
     if column not in EDITABLE_COLUMNS:
         raise ValueError(f"Không được sửa cột '{column}'.")
     notion_name = EDITABLE_COLUMNS[column][1]
@@ -213,7 +218,7 @@ def build_column_update(column: str, value) -> dict:
         _check_chapters(value)
         return {notion_name: {"number": value}}
     if column == "tags":
-        return {notion_name: _tags_property(value)}
+        return {notion_name: _tags_property(value, source_id)}
     if column == "link":
         return {notion_name: {"url": _check_link(value)}}
     if column == "date":
@@ -237,15 +242,18 @@ def _same_id(a: str, b: str) -> bool:
     return (a or "").replace("-", "").lower() == (b or "").replace("-", "").lower()
 
 
-def _check_page_in_table(page: dict) -> None:
-    """Refuse to touch anything that is not a live row of the novel table."""
+def _page_source(page: dict) -> str:
+    """Refuse to touch anything that is not a live row of one of our lists.
+    Returns the list the page is in (as written in .env), which tells us whose tag
+    options to use."""
     parent = page.get("parent") or {}
-    if page.get("object") != "page" or not _same_id(
-        parent.get("data_source_id"), notion_search.NOTION_DATA_SOURCE_ID
-    ):
-        raise ValueError("Trang này không thuộc bảng truyện, nên mình không sửa.")
+    source = next((sid for sid in notion_search.all_sources()
+                   if _same_id(parent.get("data_source_id"), sid)), None)
+    if page.get("object") != "page" or source is None:
+        raise ValueError("Trang này không thuộc các bảng truyện của bạn, nên mình không sửa.")
     if page.get("in_trash") or page.get("archived"):
         raise ValueError("Truyện này đã bị xóa khỏi bảng, nên mình không sửa.")
+    return source
 
 
 def read_column(page: dict, column: str):
@@ -270,23 +278,8 @@ def get_story(page_id: str) -> dict:
     """Read one story's current values for all editable columns (used by /edit to show
     the current value before you change it). Read-only."""
     page = _client().pages.retrieve(page_id=page_id)
-    _check_page_in_table(page)
+    _page_source(page)  # refuses pages outside the lists we may edit
     return {column: read_column(page, column) for column in EDITABLE_COLUMNS}
-
-
-COL_ID = "ID"  # the column that numbers the stories of a list (L1-1, L2-15, L3-90 ...)
-
-
-def _id_label(page: dict) -> str | None:
-    """The ID the new row ended up with (like 'L3-90'), or None if the list has no ID."""
-    prop = (page.get("properties") or {}).get(COL_ID) or {}
-    if prop.get("type") == "rich_text":  # a text ID column (list 1): the text we wrote
-        return "".join(p.get("plain_text", "") for p in prop["rich_text"]) or None
-    unique = prop.get("unique_id") if prop.get("type") == "unique_id" else None
-    if not unique or unique.get("number") is None:
-        return None
-    # Notion's automatic ID is a prefix + a number, like "L3" + 90
-    return f"{unique['prefix']}-{unique['number']}" if unique.get("prefix") else str(unique["number"])
 
 
 def _next_text_id(source_id: str) -> dict:
@@ -322,14 +315,17 @@ def _next_text_id(source_id: str) -> dict:
 
 def _log_write(action: str, **details) -> None:
     """Append one line to writes.log. A failure to log never hides a finished write."""
-    entry = {"time": datetime.now().isoformat(timespec="seconds"), "action": action, **details}
+    # Same date-time style as bot.log (2026-11-10 10:51:10), so the two logs read alike
+    entry = {"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "action": action, **details}
     try:
         os.makedirs(os.path.dirname(WRITE_LOG_PATH), exist_ok=True)
         with open(WRITE_LOG_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError:
         logger.exception("Không ghi được writes.log")
-    logger.info("Notion write: %s", action)
+    # The short line in bot.log: what was written and where (the values are in writes.log)
+    shown = " ".join(f"{k}={details[k]}" for k in ("list", "code", "column", "page_id") if details.get(k))
+    logger.info("Notion write: %s %s (full details in writes.log)", action, shown)
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +343,7 @@ def add_story(name, author, chapters, tags, link, status="Full") -> dict:
         properties=props,
     )
     result = {"id": page["id"], "url": page.get("url"), "name": name.strip(),
-              "list": notion_search.list_number(target), "code": _id_label(page)}
+              "list": notion_search.list_number(target), "code": id_label(page)}
     _log_write("add", page_id=page["id"], name=result["name"], author=author,
                chapters=chapters, tags=tags, link=link, status=status,
                list=result["list"], code=result["code"])
@@ -356,18 +352,28 @@ def add_story(name, author, chapters, tags, link, status="Full") -> dict:
 
 def update_story(page_id: str, column: str, value) -> dict:
     """Change ONE column of ONE existing story. Nothing else is touched.
-    Returns the old and new value of that column."""
-    props = build_column_update(column, value)
+    The story may be in any of our lists. Returns the old and new
+    value of that column (and which list the story is in)."""
     client = _client()
 
-    # Look at the page first: it must be a live row of our table, and we keep its old value
+    # Bad input is refused before any call to Notion. Only the tags need the page first,
+    # because every list has its own tags (so we must know which list the story is in).
+    props = build_column_update(column, value) if column != "tags" else None
+
+    # Look at the page: it must be a live row of one of our lists, and we keep its old value
     page = client.pages.retrieve(page_id=page_id)
-    _check_page_in_table(page)
+    source = _page_source(page)
+    if props is None:
+        props = build_column_update(column, value, source)  # tags: checked against THIS list's tags
     story_name = read_column(page, "name")
     before = read_column(page, column)
 
     updated = client.pages.update(page_id=page_id, properties=props)
     after = read_column(updated, column)
 
-    _log_write("update", page_id=page_id, name=story_name, column=column, before=before, after=after)
-    return {"id": page_id, "name": story_name, "column": column, "before": before, "after": after}
+    number = notion_search.list_number(source)
+    code = id_label(page)
+    _log_write("update", page_id=page_id, name=story_name, column=column, before=before, after=after,
+               list=number, code=code)
+    return {"id": page_id, "name": story_name, "column": column, "before": before, "after": after,
+            "list": number, "code": code}

@@ -5,8 +5,8 @@ Run with:  python -m tests.test_paging"""
 from services import notion_search
 from services import gemini_agent as g
 
-notion_search.EXTRA_SOURCE_IDS = []  # these tests are about ONE list; test_multi_lists covers several
-notion_search.NOTION_ADD_DATA_SOURCE_ID = None  # and /add writes to list 1 here
+notion_search.DATA_SOURCE_IDS = notion_search.DATA_SOURCE_IDS[:1]  # these tests use ONE list; test_multi_lists covers several
+notion_search.ADD_SOURCE_ID = None
 
 failures = []
 

@@ -30,9 +30,8 @@ You need Python 3.11 or newer (the project runs on Python 3.13). Check with `pyt
    - `BOT_TOKEN`: the token from @BotFather on Telegram.
    - `TELEGRAM_USER_ID`: your numeric ID (get it from the @userinfobot bot).
    - `NOTION_TOKEN`: the token of your Notion integration (notion.so/profile/integrations). Remember to share the novel table with the integration.
-   - `NOTION_DATA_SOURCE_ID`: the data source ID of the main novel table (list 1). `/edit` only works on this list.
-   - `NOTION_EXTRA_DATA_SOURCE_IDS` (optional): the data source IDs of your other lists (list 2, list 3), separated by commas, for example `id2,id3`. The search and the `/add` duplicate check read them too. Share these tables with the integration as well. Leave empty to search list 1 only.
-   - `NOTION_ADD_DATA_SOURCE_ID` (optional): the data source ID of the list where `/add` puts new stories (for example list 3). Leave empty to add to list 1. `/edit` only works on list 1.
+   - `NOTION_DATA_SOURCE_ID`: the data source IDs of **all** your novel lists, separated by commas (for example `id1,id2,id3`). The first one is "List 1", the next "List 2", and so on. The search, the `/add` duplicate warning and `/edit` all work in every one of these lists. Share every table with the integration.
+   - `NOTION_ADD_DATA_SOURCE_ID` (optional): the one list where `/add` puts new stories (for example list 3). Leave empty to add to the first list.
    - `GEMINI_API_KEY`: the API key from Google AI Studio (aistudio.google.com).
    - `GEMINI_MODEL` (optional): the Gemini model name. Leave empty to use the default `gemini-3.6-flash`.
    - `LOG_LEVEL` (optional): how detailed the log is (`DEBUG`, `INFO`, `WARNING`, `ERROR`). Leave empty to use `INFO`.
@@ -63,6 +62,15 @@ For each question the log records, in order: the incoming question, the time of 
 the Notion result and time, the token usage, "Reply sent" and the total time. Example token line:
 `usage: model=... prompt=871 output=33 function_calls=1 model_requests=1 total=904`
 (`model_requests` is the number of Gemini calls, useful for tracking the free limit of 15 calls per minute).
+Every line starts with the date and time (for example `2026-11-10 10:56:16,900`).
+
+`/add` and `/edit` are logged too. Each `/add` or `/edit` conversation gets one short id, shown on all of its lines, so you can follow
+one conversation with `grep k3x9a logs/bot.log`. It records the start (user id hidden), every step with its result (for example
+`/add link: ok host=example.com`, `/add duplicate check: found=1 in_lists=[2]`), refused answers, the Confirm press, the final result
+(`/add done: added name='...' list=3 id=L3-90 page_id=... total_time=...`) and any cancel (with the step where it stopped).
+What you typed is not logged, only lengths, counts and the website of a link. Every change made to Notion is also written, in full,
+to `logs/writes.log` with the date and time and the before/after values.
+
 See today's summary with `python -m logtools.summary` (add a date like `2026-11-09` for another day). To preview the log lines without a network, run `python -m tests.demo_log`.
 
 The bot remembers the last 5 questions in each chat (lost when the bot stops, and it remembers only the conditions that were searched, not story names),
@@ -77,13 +85,13 @@ the new story is added to Notion. Type `/cancel` at any time to stop (nothing ha
 Defaults: Status = Full, Reading Status = Not started, Record Audio = Not started,
 Note and Date are left empty. If the story is already in any of your lists (same name or link), the bot warns you.
 
-The new story goes into the list set by `NOTION_ADD_DATA_SOURCE_ID` in `.env` (for example list 3). The tag buttons show the tags of that list, and the bot tells you the automatic ID Notion gave the story (for example `L3-90`). `/edit` still only edits list 1.
+The new story goes into the list set by `NOTION_ADD_DATA_SOURCE_ID` in `.env` (for example list 3). The tag buttons show the tags of that list, and the bot tells you the automatic ID Notion gave the story (for example `L3-90`). `/edit` can change stories in any of your lists.
 
 Note: to add stories, the Notion integration must have the **Insert content** capability turned on.
 
 ## Edit a story: /edit
 
-Type `/edit`, enter part of a story name or an author name, then pick the story from the list.
+Type `/edit`, enter part of a story name or an author name, then pick the story from the list. The bot looks in all your lists, and each button starts with the story's ID (for example `L3-91`) or its list.
 The bot shows the current values and asks which column you want to edit (name, author, chapters, tags, link,
 Status, Reading Status, Record Audio, note, date). You enter the new value, the bot shows
 "Before / After" and only writes to Notion when you press **Confirm**. After each edit, the bot asks

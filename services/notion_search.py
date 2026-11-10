@@ -7,9 +7,10 @@
   /add duplicate warning (all lists).
 - Each list has its OWN tag options, so tags are always checked against the list they
   are used in (get_valid_tags(source_id)).
-- Which lists are used comes from .env: NOTION_DATA_SOURCE_ID (list 1),
-  NOTION_EXTRA_DATA_SOURCE_IDS (more lists) and NOTION_ADD_DATA_SOURCE_ID (where /add
-  puts new stories).
+- Which lists are used comes from .env (each value is a Notion "data source ID"):
+    NOTION_DATA_SOURCE_ID       ALL your lists, comma-separated. They are used for the search,
+                                the /add duplicate warning and /edit (which works in any of them)
+    NOTION_ADD_DATA_SOURCE_ID   the ONE list where /add puts new stories (empty = the first)
 
 Writing to Notion lives in notion_write.py only.
 """
@@ -28,18 +29,21 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-NOTION_DATA_SOURCE_ID = os.getenv("NOTION_DATA_SOURCE_ID")  # list 1: the ONLY list /add and /edit write to
 
-# The list where /add puts NEW stories (e.g. list 3). Empty = the main list (list 1).
-# /edit never uses it: /edit only changes list 1.
-NOTION_ADD_DATA_SOURCE_ID = os.getenv("NOTION_ADD_DATA_SOURCE_ID")
 
-# Extra lists (list 2, list 3, ...) that SEARCH and the /add duplicate check also read.
-# In .env: NOTION_EXTRA_DATA_SOURCE_IDS=id2,id3  (comma-separated, optional)
-EXTRA_SOURCE_IDS = [
-    part.strip() for part in (os.getenv("NOTION_EXTRA_DATA_SOURCE_IDS") or "").split(",")
-    if part.strip()
-]
+def _split_ids(text) -> list:
+    """'id1, id2,,id3' -> ['id1', 'id2', 'id3'] (spaces and blanks removed, no repeats)."""
+    ids = []
+    for part in (text or "").split(","):
+        part = part.strip()
+        if part and part not in ids:
+            ids.append(part)
+    return ids
+
+
+# The lists, as set in .env. The ORDER matters: the first one is list 1, the next list 2...
+DATA_SOURCE_IDS = _split_ids(os.getenv("NOTION_DATA_SOURCE_ID"))        # all lists: search, duplicates, /edit
+ADD_SOURCE_ID = (os.getenv("NOTION_ADD_DATA_SOURCE_ID") or "").strip() or None  # where /add writes
 
 # Column names in the Notion table. They must match EXACTLY.
 # Note: "Reading Status " really has a space at the end in Notion!
@@ -68,38 +72,44 @@ TAG_SYNONYMS = [
 def _client() -> Client:
     """The Notion client: created once and reused (a missing .env value stops the bot with a
     clear message, and is not cached, so fixing .env and retrying works)."""
-    if not NOTION_TOKEN or not NOTION_DATA_SOURCE_ID:
+    if not NOTION_TOKEN or not all_sources():
         raise SystemExit(
             "Thiếu NOTION_TOKEN hoặc NOTION_DATA_SOURCE_ID. Hãy điền vào file .env."
         )
     return Client(auth=NOTION_TOKEN)
 
 
-def add_source_id() -> str:
-    """The list /add writes new stories to (list 1 if NOTION_ADD_DATA_SOURCE_ID is empty)."""
-    return NOTION_ADD_DATA_SOURCE_ID or NOTION_DATA_SOURCE_ID
-
-
-def list_number(source_id: str) -> int:
-    """Position of a list in the search order (1 = the main list), or 0 if unknown."""
-    sources = _search_sources()
-    return sources.index(source_id) + 1 if source_id in sources else 0
-
-
-def _search_sources() -> list:
-    """Every list the search reads: list 1 first, then the extra lists, then the /add list
-    (so a story just added is always searchable). No repeats."""
-    sources = []
-    for source_id in [NOTION_DATA_SOURCE_ID, *EXTRA_SOURCE_IDS, add_source_id()]:
-        if source_id and source_id not in sources:
-            sources.append(source_id)
+def all_sources() -> list:
+    """Every list we work with (search, /add duplicate warning and /edit), in .env order
+    (the first is "list 1"), then the /add list if it is not in there already (so a story
+    just added can always be found and edited)."""
+    sources = list(DATA_SOURCE_IDS)
+    if ADD_SOURCE_ID and ADD_SOURCE_ID not in sources:
+        sources.append(ADD_SOURCE_ID)
     return sources
 
 
+def main_source_id() -> str | None:
+    """The first list. It is the default when a function is not told which list to use."""
+    sources = all_sources()
+    return sources[0] if sources else None
+
+
+def add_source_id() -> str | None:
+    """The list /add writes new stories to (the first list if NOTION_ADD_DATA_SOURCE_ID is empty)."""
+    return ADD_SOURCE_ID or main_source_id()
+
+
+def list_number(source_id: str) -> int:
+    """Position of a list in the search order (1 = the first list), or 0 if unknown."""
+    sources = all_sources()
+    return sources.index(source_id) + 1 if source_id in sources else 0
+
+
 def get_valid_tags(source_id: str = None) -> list[str]:
-    """The real tag names of ONE list. No source_id means list 1.
+    """The real tag names of ONE list. No source_id means the first list.
     Each list has its own tag options."""
-    return _fetch_tags(source_id or NOTION_DATA_SOURCE_ID)
+    return _fetch_tags(source_id or main_source_id())
 
 
 @lru_cache(maxsize=None)
@@ -111,9 +121,9 @@ def _fetch_tags(source_id: str) -> list[str]:
 
 
 def get_all_tags() -> list[str]:
-    """Tag names of all searched lists together (list 1 first, no repeats)."""
+    """Tag names of all searched lists together (first list first, no repeats)."""
     tags = []
-    for source_id in _search_sources():
+    for source_id in all_sources():
         for tag in get_valid_tags(source_id):
             if tag not in tags:
                 tags.append(tag)
@@ -198,10 +208,27 @@ def _plain_text(rich_text_list: list) -> str:
     return "".join(piece["plain_text"] for piece in rich_text_list)
 
 
+COL_ID = "ID"  # the column that numbers the stories of a list (L1-1, L2-15, L3-90 ...)
+
+
+def id_label(page: dict) -> str | None:
+    """The ID of a row as text (like 'L3-90'), or None if the list has no ID or it is empty.
+    The ID column is Notion's automatic ID in some lists and plain text in others."""
+    prop = (page.get("properties") or {}).get(COL_ID) or {}
+    if prop.get("type") == "rich_text":  # a text ID column: the text itself
+        return "".join(p.get("plain_text", "") for p in prop["rich_text"]).strip() or None
+    unique = prop.get("unique_id") if prop.get("type") == "unique_id" else None
+    if not unique or unique.get("number") is None:
+        return None
+    # Notion's automatic ID is a prefix + a number, like "L3" + 90
+    return f"{unique['prefix']}-{unique['number']}" if unique.get("prefix") else str(unique["number"])
+
+
 def _to_story(page: dict) -> dict:
     """Keep only the fields we need from one Notion row."""
     props = page["properties"]
     return {
+        "code": id_label(page),
         "name": _plain_text(props[COL_NAME]["title"]),
         "author": _plain_text(props[COL_AUTHOR]["rich_text"]),
         "chapters": props[COL_CHAPTERS]["number"],
@@ -212,22 +239,30 @@ def _to_story(page: dict) -> dict:
 
 def find_books(text: str, limit: int = MAX_RESULTS) -> dict:
     """Find books whose name OR author contains the text (used by /edit to pick a book).
+    Looks in every list (see all_sources), in .env order.
     Returns {"books": [...], "has_more": True if there were more than `limit` matches}.
-    Each book includes its Notion page "id". Read-only. Looks in list 1 ONLY, because
-    /edit only changes list 1 (see notion_write._check_page_in_table)."""
+    Each book has its Notion page "id", the list it is in ("source_id" and "list", the list
+    number) and its ID "code" (like L3-91). Read-only."""
     text = (text or "").strip()
     if not text:
         raise ValueError("Hãy nhập một phần tên truyện hoặc tên tác giả.")
-    response = _client().data_sources.query(
-        data_source_id=NOTION_DATA_SOURCE_ID,
-        page_size=limit,
-        filter={"or": [
-            {"property": COL_NAME, "title": {"contains": text}},
-            {"property": COL_AUTHOR, "rich_text": {"contains": text}},
-        ]},
-    )
-    books = [{"id": page["id"], **_to_story(page)} for page in response["results"]]
-    return {"books": books, "has_more": response["has_more"]}
+    books, has_more = [], False
+    for source_id in all_sources():
+        response = _client().data_sources.query(
+            data_source_id=source_id,
+            page_size=limit,
+            filter={"or": [
+                {"property": COL_NAME, "title": {"contains": text}},
+                {"property": COL_AUTHOR, "rich_text": {"contains": text}},
+            ]},
+        )
+        has_more = has_more or response["has_more"]
+        for page in response["results"]:
+            books.append({"id": page["id"], "source_id": source_id, "list": list_number(source_id),
+                          **_to_story(page)})
+    if len(books) > limit:  # more matches than the buttons can show
+        books, has_more = books[:limit], True
+    return {"books": books, "has_more": has_more}
 
 
 def _same_text(a: str, b: str) -> bool:
@@ -258,7 +293,7 @@ def find_duplicates(name: str = None, link: str = None) -> list:
         return []
 
     found = []
-    for number, source_id in enumerate(_search_sources(), start=1):
+    for number, source_id in enumerate(all_sources(), start=1):
         response = _client().data_sources.query(
             data_source_id=source_id,
             page_size=100,
@@ -303,7 +338,7 @@ def search_stories(tags=None, reading_status=None, status=None, max_chapters=Non
     two lists is counted once. seed=None keeps that order. With a seed, all matches are
     shuffled in a random order that depends only on the seed, so asking again with the
     same seed and a larger skip gives the NEXT stories of the same shuffled list."""
-    sources = _search_sources()
+    sources = all_sources()
     many = len(sources) > 1
 
     # A tag must exist in at least one list, otherwise it is a typo (clear error message)

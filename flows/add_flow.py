@@ -26,6 +26,7 @@ from telegram.ext import (
     filters,
 )
 
+from flows import flowlog
 from services import notion_search
 from services import notion_write as w
 
@@ -57,6 +58,10 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         Keys: name, link, author, chapters, tags, valid_tags, status, nonce."""
         return context.user_data.setdefault(DATA_KEY, {})
 
+    def log(context, name: str, text: str = "", *args, **kwargs) -> None:
+        """Log one /add step (see flows/flowlog.py)."""
+        flowlog.step(logger, context, DATA_KEY, name, text, *args, **kwargs)
+
     async def drop_buttons(update: Update) -> None:
         """Remove the buttons from the message that was just answered."""
         try:
@@ -72,6 +77,7 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         context.user_data[DATA_KEY] = {}  # always start from a clean slate
         number = notion_search.list_number(notion_search.add_source_id())
         where = f" vào List {number}" if number else ""
+        flowlog.begin(update, context, DATA_KEY, logger, target_list=number or "?")
         await update.message.reply_text(
             f"Thêm truyện mới{where}. Gõ /cancel bất cứ lúc nào để dừng (chưa ghi gì vào Notion).\n\n"
             "1/6 - Nhập TÊN truyện:"
@@ -80,28 +86,34 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
 
     # ---- text steps ------------------------------------------------------
 
+    @flowlog.tracked(DATA_KEY)
     async def got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Step 1: check the typed name (same rules as the real write), then ask for the link."""
         try:
             # build_column_update applies the same rules as the real write
             w.build_column_update("name", update.message.text)
         except ValueError as error:
+            log(context, "name", "rejected (%s)", error)
             await update.message.reply_text(f"{error}\nNhập lại TÊN truyện:")
             return NAME
         data(context)["name"] = update.message.text.strip()
+        log(context, "name", "ok length=%d", len(data(context)["name"]))
         await update.message.reply_text("2/6 - Nhập LINK truyện (bắt đầu bằng http:// hoặc https://):")
         return LINK
 
+    @flowlog.tracked(DATA_KEY)
     async def got_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Step 2: check the link, then look in ALL lists for the same name or link.
         If something similar exists, warn and let the owner decide; otherwise ask for the author."""
         try:
             w.build_column_update("link", update.message.text)
         except ValueError as error:
+            log(context, "link", "rejected (%s)", error)
             await update.message.reply_text(f"{error}\nNhập lại LINK:")
             return LINK
         d = data(context)
         d["link"] = update.message.text.strip()
+        log(context, "link", "ok host=%s", flowlog.host_of(d["link"]))
 
         # Now we know the name and the link: is the story already in the table?
         try:
@@ -114,6 +126,9 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
             )
             return ConversationHandler.END
 
+        found_in = sorted({dup["list"] for dup in duplicates})
+        log(context, "duplicate check", "found=%d in_lists=%s%s", len(duplicates), found_in or "-",
+            " -> asking the owner" if duplicates else "")
         if duplicates:
             lines = ["⚠️ Trong bảng đã có truyện giống:"]
             for dup in duplicates[:5]:
@@ -129,36 +144,44 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         await update.message.reply_text("3/6 - Nhập TÁC GIẢ:")
         return AUTHOR
 
+    @flowlog.tracked(DATA_KEY)
     async def dup_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """The owner pressed 'Add anyway' after the duplicate warning: carry on with the author."""
         if not is_owner(update):
             return DUPLICATE
         await update.callback_query.answer()
         await drop_buttons(update)
+        log(context, "duplicate", "owner chose to add anyway")
         await update.effective_message.reply_text("3/6 - Nhập TÁC GIẢ:")
         return AUTHOR
 
+    @flowlog.tracked(DATA_KEY)
     async def got_author(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Step 3: check the author, then ask for the number of chapters."""
         try:
             w.build_column_update("author", update.message.text)
         except ValueError as error:
+            log(context, "author", "rejected (%s)", error)
             await update.message.reply_text(f"{error}\nNhập lại TÁC GIẢ:")
             return AUTHOR
         data(context)["author"] = update.message.text.strip()
+        log(context, "author", "ok length=%d", len(data(context)["author"]))
         await update.message.reply_text("4/6 - Nhập SỐ CHƯƠNG (số nguyên, từ 1 trở lên):")
         return CHAPTERS
 
+    @flowlog.tracked(DATA_KEY)
     async def got_chapters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Step 4: check the chapter count, load the tags of the list we add to,
         and show the tag buttons."""
         try:
             chapters = w.parse_chapters(update.message.text)
         except ValueError as error:
+            log(context, "chapters", "rejected (%s)", error)
             await update.message.reply_text(f"{error}\nNhập lại SỐ CHƯƠNG:")
             return CHAPTERS
         d = data(context)
         d["chapters"] = chapters
+        log(context, "chapters", "ok value=%d", chapters)
         d["tags"] = []
 
         try:
@@ -173,6 +196,7 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
             )
             return ConversationHandler.END
 
+        log(context, "tags", "buttons shown: %d tags available", len(d["valid_tags"]))
         await update.message.reply_text(tags_text(d), reply_markup=tags_keyboard(d))
         return TAGS
 
@@ -195,6 +219,7 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         rows.append([InlineKeyboardButton("✔️ Done", callback_data="add:tags_done"), CANCEL_BUTTON])
         return InlineKeyboardMarkup(rows)
 
+    @flowlog.tracked(DATA_KEY)
     async def toggle_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """A tag button was tapped: select the tag, or unselect it if it was already chosen."""
         if not is_owner(update):
@@ -216,6 +241,7 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
             pass
         return TAGS
 
+    @flowlog.tracked(DATA_KEY)
     async def tags_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """'Done' pressed on the tags: at least one tag is needed, then ask for the status."""
         if not is_owner(update):
@@ -223,9 +249,11 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         query = update.callback_query
         d = data(context)
         if not d.get("tags"):
+            log(context, "tags", "Done pressed with no tag chosen")
             await query.answer("Hãy chọn ít nhất 1 tag.", show_alert=True)
             return TAGS
         await query.answer()
+        log(context, "tags", "done, chosen=%d", len(d["tags"]))
         chosen = ", ".join(t.strip() for t in d["tags"])
         await query.edit_message_text(f"5/6 - Tags: {chosen}")
         keyboard = InlineKeyboardMarkup([
@@ -239,6 +267,7 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
 
     # ---- status and the final confirmation ------------------------------------
 
+    @flowlog.tracked(DATA_KEY)
     async def got_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """A status button was tapped: show the final summary with Confirm / Cancel.
         Nothing is written to Notion yet."""
@@ -248,6 +277,7 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         d = data(context)
         await query.answer()
         d["status"] = query.data.split(":", 2)[2]
+        log(context, "status", "%s", d["status"])
         await query.edit_message_text(f"6/6 - Status: {d['status']}")
 
         summary = (
@@ -269,9 +299,11 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Confirm", callback_data=f"add:confirm:{d['nonce']}"), CANCEL_BUTTON,
         ]])
+        log(context, "summary", "shown, waiting for Confirm (nothing written yet)")
         await query.message.reply_text(summary, reply_markup=keyboard)
         return CONFIRM
 
+    @flowlog.tracked(DATA_KEY)
     async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """The ONLY place that writes. Runs when the owner presses Confirm on the summary.
         The button's one-time code is checked and used up BEFORE the write, so an old or
@@ -281,12 +313,15 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         query = update.callback_query
         d = data(context)
         if not d.get("nonce") or query.data.split(":")[2] != d["nonce"]:
+            logger.warning("/add confirm refused: this button is old or was already used")
             await query.answer("Nút này đã cũ, hãy dùng tin nhắn mới nhất.", show_alert=True)
             return CONFIRM
         await query.answer()
         await drop_buttons(update)  # so the button cannot be pressed twice
         d = context.user_data.pop(DATA_KEY, {})  # using up the code BEFORE the write
         reply = update.effective_message.reply_text
+        logger.info("/add confirm: writing to Notion (list %s)",
+                    notion_search.list_number(notion_search.add_source_id()) or "?")
         try:
             result = await asyncio.to_thread(
                 w.add_story, d["name"], d["author"], d["chapters"], d["tags"], d["link"], d["status"]
@@ -309,6 +344,9 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
             await reply(f"{friendly_error(error)}\nHãy kiểm tra trong Notion trước khi thử lại, "
                         "để tránh thêm trùng.")
         else:
+            logger.info("/add done: added name=%r list=%s id=%s page_id=%s total_time=%.1fs",
+                        flowlog.short(result["name"]), result.get("list") or "?", result.get("code") or "-",
+                        result["id"], flowlog.elapsed(d))
             where = f" vào List {result['list']}" if result.get("list") else ""
             code = f" (ID {result['code']})" if result.get("code") else ""
             await reply(f"✅ Đã thêm{where}{code}: {result['name']}\n{result['url']}")
@@ -316,20 +354,26 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
 
     # ---- cancelling and stray messages ----------------------------------------
 
+    @flowlog.tracked(DATA_KEY)
     async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """/cancel or the Cancel button: stop /add. Nothing was written."""
         if not is_owner(update):
             return ConversationHandler.END
-        context.user_data.pop(DATA_KEY, None)
+        d = context.user_data.pop(DATA_KEY, None)
+        logger.info("/add cancelled at step '%s' after %.1fs: nothing was written",
+                    flowlog.last_step(d), flowlog.elapsed(d))
         if update.callback_query:
             await update.callback_query.answer()
             await drop_buttons(update)
         await update.effective_message.reply_text("Đã hủy. Chưa ghi gì vào Notion.")
         return ConversationHandler.END
 
+    @flowlog.tracked(DATA_KEY)
     async def use_the_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Text typed while the bot waits for a button press. Without this, the text
         would fall through to Gemini."""
+        logger.info("/add stray text at step '%s' (ignored: a button was expected)",
+                    flowlog.last_step(context.user_data.get(DATA_KEY)))
         await update.message.reply_text("Hãy bấm một nút ở trên, hoặc gõ /cancel để dừng.")
 
     # ---- put it together --------------------------------------------------------
