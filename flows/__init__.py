@@ -27,6 +27,7 @@ def build_flows(only_me, owner_id: int, friendly_error) -> ConversationHandler:
     edit_cancel = edit.fallbacks[0].callback
 
     async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """/cancel: pick the right flow's cancel message (the /edit one while /edit is open)."""
         if "edit" in context.user_data:
             return await edit_cancel(update, context)
         return await add_cancel(update, context)

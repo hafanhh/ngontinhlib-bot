@@ -1,3 +1,17 @@
+"""Answers a free-text question: Gemini chooses the search, our code does the rest.
+
+How one question flows (only ONE request is sent to Gemini):
+1. answer_question sends your question to Gemini with one tool, find_stories.
+2. Gemini does not search anything itself: it only picks the filters (tags, status,
+   author ...) by "calling" find_stories.
+3. Our code runs the search in Notion (services/notion_search.py) and render.py writes
+   the story list. The list is never sent back to Gemini (this saves tokens and time).
+
+Gemini never touches Notion and has no write tool. A short per-chat memory keeps the
+last few questions, so follow-ups like "chỉ lấy truyện đã hoàn" and "xem thêm" work.
+It also counts the tokens and time of every request for the log.
+"""
+
 import logging
 import os
 import random
@@ -116,7 +130,7 @@ def find_stories(
 def _config() -> types.GenerateContentConfig:
     """Build the Gemini settings once. The tool description lists the real tags from
     Notion, so Gemini can only pick tags that exist."""
-    valid_tags = ", ".join(t.strip() for t in notion_search.get_valid_tags())
+    valid_tags = ", ".join(t.strip() for t in notion_search.get_all_tags())
     find_stories.__doc__ = f"""Tìm truyện trong thư viện Notion của người dùng. Mọi điều kiện đều tùy chọn, ghép bằng AND.
 - tags: danh sách tag, truyện phải có TẤT CẢ. Chỉ dùng tag sau: {valid_tags}. ("Trùng sinh" và "Trọng sinh" là một.)
 - reading_status: tiến độ ĐỌC của người dùng: "Not started" (chưa đọc), "In progress" (đang đọc), "Done" (đã đọc xong), "Beginning + End" (chỉ đọc đầu và cuối), "Drop" (đã bỏ).
@@ -147,6 +161,7 @@ _usage: dict = {}
 
 
 def _reset_usage() -> None:
+    """Zero the token and request counters before a new question."""
     _usage.update(model_requests=0, prompt=0, output=0, thinking=0, cached=0, total=0, function_calls=0)
     _seen.clear()
     _timing["started"] = None
@@ -206,6 +221,7 @@ def _log_usage(force: bool = False) -> None:
         return
 
     def show(key):
+        """A counter as text, or 'n/a' if Gemini never sent that number."""
         return _usage[key] if key in _seen else "n/a"
 
     parts = [f"model={GEMINI_MODEL}", f"prompt={show('prompt')}", f"output={show('output')}",
@@ -230,6 +246,7 @@ def _http_options(**extra) -> types.HttpOptions:
 
 @lru_cache(maxsize=1)
 def _client() -> genai.Client:
+    """The Gemini client: created once and reused (stops with a clear message if the key is missing)."""
     if not GEMINI_API_KEY:
         raise SystemExit("Thiếu GEMINI_API_KEY. Hãy điền vào file .env.")
     return genai.Client(api_key=GEMINI_API_KEY, http_options=_http_options())

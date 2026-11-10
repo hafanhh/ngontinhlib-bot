@@ -23,11 +23,13 @@ class RedactingFormatter(logging.Formatter):
     """Builds the normal log line (including any traceback), then hides secrets in it."""
 
     def __init__(self, *args, **kwargs):
+        """Collect the real secret values from the environment once, when the logger is set up."""
         super().__init__(*args, **kwargs)
         # Only values that are long enough to be real secrets (avoids hiding common words)
         self._secrets = [v for v in (os.getenv(k) for k in SECRET_ENV_KEYS) if v and len(v) >= 8]
 
     def format(self, record: logging.LogRecord) -> str:
+        """Return the formatted log line with every secret replaced by '***'."""
         text = super().format(record)
         for value in self._secrets:
             text = text.replace(value, "***")

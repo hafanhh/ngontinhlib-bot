@@ -30,7 +30,9 @@ You need Python 3.11 or newer (the project runs on Python 3.13). Check with `pyt
    - `BOT_TOKEN`: the token from @BotFather on Telegram.
    - `TELEGRAM_USER_ID`: your numeric ID (get it from the @userinfobot bot).
    - `NOTION_TOKEN`: the token of your Notion integration (notion.so/profile/integrations). Remember to share the novel table with the integration.
-   - `NOTION_DATA_SOURCE_ID`: the data source ID of the novel table.
+   - `NOTION_DATA_SOURCE_ID`: the data source ID of the main novel table (list 1). `/edit` only works on this list.
+   - `NOTION_EXTRA_DATA_SOURCE_IDS` (optional): the data source IDs of your other lists (list 2, list 3), separated by commas, for example `id2,id3`. The search and the `/add` duplicate check read them too. Share these tables with the integration as well. Leave empty to search list 1 only.
+   - `NOTION_ADD_DATA_SOURCE_ID` (optional): the data source ID of the list where `/add` puts new stories (for example list 3). Leave empty to add to list 1. `/edit` only works on list 1.
    - `GEMINI_API_KEY`: the API key from Google AI Studio (aistudio.google.com).
    - `GEMINI_MODEL` (optional): the Gemini model name. Leave empty to use the default `gemini-3.6-flash`.
    - `LOG_LEVEL` (optional): how detailed the log is (`DEBUG`, `INFO`, `WARNING`, `ERROR`). Leave empty to use `INFO`.
@@ -73,7 +75,9 @@ tags (tap buttons to choose) and status. At the end the bot shows a summary, and
 the new story is added to Notion. Type `/cancel` at any time to stop (nothing has been written yet).
 
 Defaults: Status = Full, Reading Status = Not started, Record Audio = Not started,
-Note and Date are left empty. If the story is already in the table (same name or link), the bot warns you.
+Note and Date are left empty. If the story is already in any of your lists (same name or link), the bot warns you.
+
+The new story goes into the list set by `NOTION_ADD_DATA_SOURCE_ID` in `.env` (for example list 3). The tag buttons show the tags of that list, and the bot tells you the automatic ID Notion gave the story (for example `L3-90`). `/edit` still only edits list 1.
 
 Note: to add stories, the Notion integration must have the **Insert content** capability turned on.
 

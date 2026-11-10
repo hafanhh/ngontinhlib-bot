@@ -51,7 +51,7 @@ class FakeTable:
 
 table = FakeTable()
 notion_search._client = lambda: table
-notion_search.get_valid_tags = lambda: ["Sủng", "HE", " Cổ Đại"]
+notion_search.get_valid_tags = lambda source_id=None: ["Sủng", "HE", " Cổ Đại"]
 
 # ---- fake Gemini: replies with whatever the test queued, and remembers every request ----
 queue = []      # replies to send, one per request

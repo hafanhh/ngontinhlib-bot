@@ -36,12 +36,14 @@ from services import notion_write as w
 
 logger = logging.getLogger(__name__)
 
-# The steps of the conversation (the bot is always "in" exactly one of them)
-# (numbered from 100 so they never clash with the /add steps in flows.py)
+# The steps of the conversation (the bot is always "in" exactly one of them), in order:
+#   SEARCH -> PICK_BOOK -> PICK_COLUMN -> VALUE_TEXT / VALUE_TAGS / VALUE_CHOICE
+#   (depending on the column) -> CONFIRM -> back to PICK_COLUMN until "Done"
+# (numbered from 100 so they never clash with the /add steps in flows/__init__.py)
 SEARCH, PICK_BOOK, PICK_COLUMN, VALUE_TEXT, VALUE_TAGS, VALUE_CHOICE, CONFIRM = range(100, 107)
 
 DATA_KEY = "edit"  # where the state of this conversation is kept (per user, in memory)
-TAGS_PER_ROW = 3
+TAGS_PER_ROW = 3  # how many tag buttons fit on one row of the keyboard
 MAX_SHOWN = 80     # long values (like notes) are shortened in lists
 
 # Columns that are chosen from a fixed list of values, with a short hint for each value
@@ -56,6 +58,7 @@ HINTS = {
                        "Beginning + End": "read only start and end", "Drop": "dropped"},
     "record_audio": {},
 }
+# The question asked for each column that is typed as text
 TEXT_PROMPTS = {
     "name": "Nhập TÊN truyện mới:",
     "author": "Nhập TÁC GIẢ mới:",
@@ -93,9 +96,13 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
     friendly_error: turns an exception into a short Vietnamese message."""
 
     def is_owner(update: Update) -> bool:
+        """True only if the update comes from the owner. A second safety check on top of the
+        only_me filter: button presses (callbacks) are checked here too."""
         return update.effective_user is not None and update.effective_user.id == owner_id
 
     def data(context: ContextTypes.DEFAULT_TYPE) -> dict:
+        """The state of this /edit (kept in memory, one per user): the found books, the chosen
+        story and its current values, the column being edited, the one-time confirm code."""
         return context.user_data.setdefault(DATA_KEY, {})
 
     async def drop_buttons(update: Update) -> None:
@@ -115,6 +122,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
     # ---- 1. find the book ---------------------------------------------------
 
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """/edit: begin a fresh conversation and ask which story to change. Closes /add if open."""
         context.user_data.pop("add", None)  # leave /add if it was open (see flows/__init__.py)
         context.user_data[DATA_KEY] = {}  # always start from a clean slate
         await update.message.reply_text(
@@ -124,6 +132,8 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         return SEARCH
 
     async def got_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Step 1: search list 1 by part of the name or author and show up to 10 books as buttons.
+        Typing again simply searches again."""
         text = update.message.text.strip()
         try:
             found = await asyncio.to_thread(notion_search.find_books, text)
@@ -156,6 +166,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         return PICK_BOOK
 
     async def pick_book(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """A book button was tapped: read the story's current values, then show the column list."""
         if not is_owner(update):
             return PICK_BOOK
         query = update.callback_query
@@ -180,6 +191,8 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
     # ---- 2. choose a column ------------------------------------------------------
 
     async def ask_column(update: Update, context, first: bool = False) -> int:
+        """Step 2: show the story's current values with one button per editable column,
+        plus 'Done'. `first` only changes the wording of the question."""
         d = data(context)
         lines = [f"Truyện: {d['name']}", ""]
         for key, (label, _) in w.EDITABLE_COLUMNS.items():
@@ -195,6 +208,8 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         return PICK_COLUMN
 
     async def pick_column(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """A column button was tapped: ask for the new value in the way that fits the column
+        (tag buttons, a list of allowed values, or typed text)."""
         if not is_owner(update):
             return PICK_COLUMN
         query = update.callback_query
@@ -237,6 +252,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         return VALUE_TEXT
 
     async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """'Choose another column' was pressed: forget this column and show the column list again."""
         if not is_owner(update):
             return VALUE_TEXT
         await update.callback_query.answer()
@@ -246,6 +262,8 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
     # ---- 3. the new value ------------------------------------------------------------
 
     async def got_text_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Step 3 (typed columns): check the typed value with the same rules as the real write,
+        then show 'before -> after'."""
         d = data(context)
         column, text = d["column"], update.message.text.strip()
         try:
@@ -262,6 +280,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         return await propose(update, context, value)
 
     async def clear_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """'Clear value' was pressed. Only the note and the date may be emptied."""
         if not is_owner(update):
             return VALUE_TEXT
         d = data(context)
@@ -274,10 +293,12 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
     # Tags: tap buttons to select / deselect
 
     def tags_text(d: dict) -> str:
+        """The text above the tag buttons, with the tags selected so far."""
         return ("Chọn TAGS mới: bấm để chọn hoặc bỏ chọn, xong thì bấm \"Done\".\n"
                 f"Đã chọn: {', '.join(d['tag_sel']) or '(chưa chọn)'}")
 
     def tags_keyboard(d: dict) -> InlineKeyboardMarkup:
+        """The tag buttons: one per tag of list 1 (✅ on the selected ones), then Done and Back."""
         selected = {t.strip().casefold() for t in d["tag_sel"]}
         buttons = []
         for index, tag in enumerate(d["valid_tags"]):
@@ -289,6 +310,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         return InlineKeyboardMarkup(rows)
 
     async def toggle_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """A tag button was tapped: select the tag, or unselect it if it was already selected."""
         if not is_owner(update):
             return VALUE_TAGS
         query = update.callback_query
@@ -310,6 +332,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         return VALUE_TAGS
 
     async def tags_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """'Done' pressed on the tags: at least one tag is needed, then show 'before -> after'."""
         if not is_owner(update):
             return VALUE_TAGS
         d = data(context)
@@ -323,6 +346,8 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
     # Fixed-list columns: tap a value
 
     async def pick_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """A value button was tapped (for the columns with a fixed list of values):
+        show 'before -> after'."""
         if not is_owner(update):
             return VALUE_CHOICE
         query = update.callback_query
@@ -338,6 +363,10 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
     # ---- 4. show before -> after and ask to confirm ------------------------------------
 
     async def propose(update: Update, context, new_value) -> int:
+        """Step 4: show the current value and the new value, with Confirm / Keep old value.
+        If the new value equals the current one, it says so and goes back to the column list.
+        Nothing is written yet.
+        Creates the one-time code that the Confirm button carries."""
         d = data(context)
         column = d["column"]
         label = w.EDITABLE_COLUMNS[column][0]
@@ -364,6 +393,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         return CONFIRM
 
     async def discard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """'Keep old value' was pressed: drop this change (nothing was written) and show the columns."""
         if not is_owner(update):
             return CONFIRM
         data(context)["nonce"] = None
@@ -373,6 +403,9 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         return await ask_column(update, context)
 
     async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """The ONLY place that writes. Runs when the owner presses Confirm on 'before -> after'.
+        The one-time code is checked and used up BEFORE the write, so an old or double-pressed
+        button can never confirm or repeat a change. One column is written per confirmation."""
         if not is_owner(update):
             return CONFIRM
         query = update.callback_query
@@ -421,6 +454,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
     # ---- finishing, cancelling, stray messages -------------------------------------------
 
     async def finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """'Done' was pressed: end /edit and list the changes that were made."""
         if not is_owner(update):
             return PICK_COLUMN
         d = context.user_data.pop(DATA_KEY, {})
@@ -435,6 +469,7 @@ def build_edit_handler(only_me, owner_id: int, friendly_error) -> ConversationHa
         return ConversationHandler.END
 
     async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """/cancel: stop /edit. Changes confirmed earlier stay in Notion; an unconfirmed one is dropped."""
         if not is_owner(update):
             return ConversationHandler.END
         done = len(context.user_data.pop(DATA_KEY, {}).get("changes", []))

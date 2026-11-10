@@ -9,6 +9,9 @@ import tempfile
 from services import notion_search
 from services import notion_write as w
 
+notion_search.EXTRA_SOURCE_IDS = []  # these tests are about ONE list; test_multi_lists covers several
+notion_search.NOTION_ADD_DATA_SOURCE_ID = None  # and /add writes to list 1 here
+
 TABLE_ID = notion_search.NOTION_DATA_SOURCE_ID
 failures = []
 
@@ -96,6 +99,9 @@ class FakeDataSources:
     def query(self, **kw):
         self.calls.append(kw)
         return {"results": self.results, "has_more": self.has_more, "next_cursor": None}
+
+    def retrieve(self, data_source_id):
+        return {"properties": {}}  # a list without an ID column: add_story sends no ID
 
 
 class FakeClient:

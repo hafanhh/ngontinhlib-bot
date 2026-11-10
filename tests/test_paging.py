@@ -5,6 +5,9 @@ Run with:  python -m tests.test_paging"""
 from services import notion_search
 from services import gemini_agent as g
 
+notion_search.EXTRA_SOURCE_IDS = []  # these tests are about ONE list; test_multi_lists covers several
+notion_search.NOTION_ADD_DATA_SOURCE_ID = None  # and /add writes to list 1 here
+
 failures = []
 
 
@@ -140,11 +143,11 @@ class Grab(logging.Handler):
     def emit(self, record): logged.append(record.getMessage())
 logging.getLogger("services.notion_search").addHandler(Grab())
 real_tags = notion_search.get_valid_tags
-notion_search.get_valid_tags = lambda: ["Sủng", "Trùng sinh", "Trọng sinh"]
+notion_search.get_valid_tags = lambda source_id=None: ["Sủng", "Trùng sinh", "Trọng sinh"]
 both = notion_search.build_filter(tags=["trùng sinh"])["and"][0]
 check("both real names are searched (OR) when both exist", [c["multi_select"]["contains"] for c in both["or"]] == ["Trùng sinh", "Trọng sinh"])
 check("no warning when everything exists", logged == [])
-notion_search.get_valid_tags = lambda: ["Sủng", "Trùng sinh"]          # 'Trọng sinh' was renamed or deleted in Notion
+notion_search.get_valid_tags = lambda source_id=None: ["Sủng", "Trùng sinh"]          # 'Trọng sinh' was renamed or deleted in Notion
 one = notion_search.build_filter(tags=["Trùng sinh"])["and"][0]
 check("a missing synonym is skipped, the search still works", one == {"property": "Tags", "multi_select": {"contains": "Trùng sinh"}})
 check("a missing synonym is reported in the log", any("Trọng sinh" in m and "TAG_SYNONYMS" in m for m in logged))

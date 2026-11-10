@@ -26,6 +26,7 @@ def clear_req_id() -> None:
 
 
 def get_req_id() -> str:
+    """The current question's id ('-' outside a question)."""
     return _req_id.get()
 
 
@@ -38,5 +39,6 @@ class ReqIdFilter(logging.Filter):
     """Copies the current req_id onto every log record, so the log format can print it."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Always lets the record through; it only adds the req_id to it."""
         record.req_id = _req_id.get()
         return True

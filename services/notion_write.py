@@ -15,6 +15,7 @@ call them, and only after you press the confirm button.
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from functools import lru_cache
 
@@ -65,12 +66,17 @@ def _client():
     return notion_search._client()
 
 
-@lru_cache(maxsize=1)
-def _tag_ids() -> dict:
-    """Map each real tag name to its Notion option id.
-    We write tags by id, because one tag (' Cổ Đại') has a space at the start of its
+def _tag_ids(source_id: str = None) -> dict:
+    """Map each real tag name of ONE list to its Notion option id (None = list 1).
+    Every list has its own tag options, so use the list the story is written in."""
+    return _fetch_tag_ids(source_id or notion_search.NOTION_DATA_SOURCE_ID)
+
+
+@lru_cache(maxsize=None)
+def _fetch_tag_ids(source_id: str) -> dict:
+    """We write tags by id, because one tag (' Cổ Đại') has a space at the start of its
     name and Notion could otherwise create a duplicate tag instead of using it."""
-    info = _client().data_sources.retrieve(data_source_id=notion_search.NOTION_DATA_SOURCE_ID)
+    info = _client().data_sources.retrieve(data_source_id=source_id)
     options = info["properties"][COL_TAGS]["multi_select"]["options"]
     return {o["name"]: o["id"] for o in options}
 
@@ -81,6 +87,7 @@ def _text(value: str) -> list:
 
 
 def _check_text(value: str, label: str) -> str:
+    """Trim a text value and reject it if it is longer than Notion allows."""
     value = value.strip()
     if len(value) > MAX_TEXT_LENGTH:
         raise ValueError(f"{label} quá dài (tối đa {MAX_TEXT_LENGTH} ký tự).")
@@ -88,21 +95,24 @@ def _check_text(value: str, label: str) -> str:
 
 
 def _check_chapters(chapters) -> None:
+    """Reject anything that is not a whole-ish number of at least 1."""
     if isinstance(chapters, bool) or not isinstance(chapters, (int, float)) or chapters < 1:
         raise ValueError("Số chương phải là một số từ 1 trở lên.")
 
 
 def _check_link(link: str) -> str:
+    """Trim the link and reject it unless it starts with http:// or https://."""
     link = link.strip()
     if not link.startswith(("http://", "https://")):
         raise ValueError("Link phải bắt đầu bằng http:// hoặc https://.")
     return link
 
 
-def _tags_property(tags) -> dict:
+def _tags_property(tags, source_id: str = None) -> dict:
     """Check the tags and build the Notion value. Unknown tags are rejected
-    (this raises ValueError listing the valid tags)."""
-    ids = _tag_ids()
+    (this raises ValueError listing the valid tags). source_id = the list the story
+    is in (None = list 1, where /edit works)."""
+    ids = _tag_ids(source_id)
     chosen = []
     for tag in tags:
         real = _match_option(tag, list(ids), "Tag")
@@ -172,7 +182,7 @@ def build_add_properties(name, author, chapters, tags, link, status="Full"):
         COL_NAME: {"title": _text(name)},
         COL_AUTHOR: {"rich_text": _text(author)},
         COL_CHAPTERS: {"number": chapters},
-        COL_TAGS: _tags_property(tags),
+        COL_TAGS: _tags_property(tags, notion_search.add_source_id()),  # tags of the list we add to
         COL_LINK: {"url": link},
         COL_STATUS: {"status": {"name": _match_option(status, STATUS_VALUES, "Status")}},
         COL_READING_STATUS: {"status": {"name": "Not started"}},
@@ -264,6 +274,52 @@ def get_story(page_id: str) -> dict:
     return {column: read_column(page, column) for column in EDITABLE_COLUMNS}
 
 
+COL_ID = "ID"  # the column that numbers the stories of a list (L1-1, L2-15, L3-90 ...)
+
+
+def _id_label(page: dict) -> str | None:
+    """The ID the new row ended up with (like 'L3-90'), or None if the list has no ID."""
+    prop = (page.get("properties") or {}).get(COL_ID) or {}
+    if prop.get("type") == "rich_text":  # a text ID column (list 1): the text we wrote
+        return "".join(p.get("plain_text", "") for p in prop["rich_text"]) or None
+    unique = prop.get("unique_id") if prop.get("type") == "unique_id" else None
+    if not unique or unique.get("number") is None:
+        return None
+    # Notion's automatic ID is a prefix + a number, like "L3" + 90
+    return f"{unique['prefix']}-{unique['number']}" if unique.get("prefix") else str(unique["number"])
+
+
+def _next_text_id(source_id: str) -> dict:
+    """The ID property to send with a new story, when the list's ID column is a plain TEXT
+    column (list 1 is like this: L1-1 ... L1-200). Finds the highest number already used
+    and returns the next one, with the same prefix (for example 'L1-201').
+
+    Returns {} (send nothing) when Notion fills the ID itself (the automatic ID type of
+    lists 2 and 3), when the list has no ID column, or when there is no earlier ID to copy
+    the prefix from. Read-only: it only looks at the existing rows."""
+    schema = _client().data_sources.retrieve(data_source_id=source_id)["properties"]
+    if (schema.get(COL_ID) or {}).get("type") != "rich_text":
+        return {}
+
+    best = None  # (highest number so far, its prefix)
+    query = {"data_source_id": source_id, "page_size": 100}
+    while True:  # Notion sends at most 100 rows at a time
+        response = _client().data_sources.query(**query)
+        for page in response["results"]:
+            text = "".join(p["plain_text"] for p in page["properties"][COL_ID]["rich_text"]).strip()
+            match = re.fullmatch(r"(.*?)(\d+)", text)  # 'L1-26' -> prefix 'L1-', number 26
+            if match and (best is None or int(match.group(2)) > best[0]):
+                best = (int(match.group(2)), match.group(1))
+        if not response["has_more"] or not response.get("next_cursor"):
+            break
+        query["start_cursor"] = response["next_cursor"]
+
+    if best is None:
+        return {}
+    number, prefix = best
+    return {COL_ID: {"rich_text": _text(f"{prefix}{number + 1}")}}
+
+
 def _log_write(action: str, **details) -> None:
     """Append one line to writes.log. A failure to log never hides a finished write."""
     entry = {"time": datetime.now().isoformat(timespec="seconds"), "action": action, **details}
@@ -284,13 +340,17 @@ def add_story(name, author, chapters, tags, link, status="Full") -> dict:
     """Add ONE new story (a new row). Never changes existing rows.
     name, author, chapters, tags and link are all required."""
     props = build_add_properties(name, author, chapters, tags, link, status)
+    target = notion_search.add_source_id()  # the "add" list (list 3), not always list 1
+    props.update(_next_text_id(target))  # the ID: automatic in Notion, or counted here for a text ID column
     page = _client().pages.create(
-        parent={"type": "data_source_id", "data_source_id": notion_search.NOTION_DATA_SOURCE_ID},
+        parent={"type": "data_source_id", "data_source_id": target},
         properties=props,
     )
-    result = {"id": page["id"], "url": page.get("url"), "name": name.strip()}
+    result = {"id": page["id"], "url": page.get("url"), "name": name.strip(),
+              "list": notion_search.list_number(target), "code": _id_label(page)}
     _log_write("add", page_id=page["id"], name=result["name"], author=author,
-               chapters=chapters, tags=tags, link=link, status=status)
+               chapters=chapters, tags=tags, link=link, status=status,
+               list=result["list"], code=result["code"])
     return result
 
 

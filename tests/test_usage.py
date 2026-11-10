@@ -15,6 +15,9 @@ from google import genai
 
 from services import gemini_agent as g
 
+g.notion_search.EXTRA_SOURCE_IDS = []  # this test is about token counting, list 1 is enough
+g.notion_search.NOTION_ADD_DATA_SOURCE_ID = None  # and /add writes to list 1 here
+
 failures = []
 
 

@@ -17,6 +17,9 @@ from telegram.ext import Application, MessageHandler, filters
 from telegram.request import BaseRequest
 
 from services import notion_search
+
+notion_search.EXTRA_SOURCE_IDS = []  # these tests use one list;
+notion_search.NOTION_ADD_DATA_SOURCE_ID = None  # test_multi_lists covers several
 from services import notion_write as w
 from flows.add_flow import build_add_handler
 
@@ -104,6 +107,9 @@ class FakeNotion:
         if self.query_error:
             raise self.query_error
         return {"results": self.existing, "has_more": False, "next_cursor": None}
+
+    def retrieve(self, data_source_id):
+        return {"properties": {}}  # a list without an ID column: add_story sends no ID
 
     def create(self, **kw):
         if self.create_error:

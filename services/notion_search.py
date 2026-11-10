@@ -1,3 +1,19 @@
+"""Reads your Notion novel lists (this file never changes anything in Notion).
+
+- search_stories: the main search. It reads ALL lists (list 1 + the extra lists) as if they
+  were one table, shuffles the matches with a seed (so "xem thêm" never repeats), and
+  returns at most 10 stories at a time.
+- find_books / find_duplicates: small lookups used by /edit (list 1 only) and by the
+  /add duplicate warning (all lists).
+- Each list has its OWN tag options, so tags are always checked against the list they
+  are used in (get_valid_tags(source_id)).
+- Which lists are used comes from .env: NOTION_DATA_SOURCE_ID (list 1),
+  NOTION_EXTRA_DATA_SOURCE_IDS (more lists) and NOTION_ADD_DATA_SOURCE_ID (where /add
+  puts new stories).
+
+Writing to Notion lives in notion_write.py only.
+"""
+
 import logging
 import os
 import random
@@ -12,7 +28,18 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-NOTION_DATA_SOURCE_ID = os.getenv("NOTION_DATA_SOURCE_ID")
+NOTION_DATA_SOURCE_ID = os.getenv("NOTION_DATA_SOURCE_ID")  # list 1: the ONLY list /add and /edit write to
+
+# The list where /add puts NEW stories (e.g. list 3). Empty = the main list (list 1).
+# /edit never uses it: /edit only changes list 1.
+NOTION_ADD_DATA_SOURCE_ID = os.getenv("NOTION_ADD_DATA_SOURCE_ID")
+
+# Extra lists (list 2, list 3, ...) that SEARCH and the /add duplicate check also read.
+# In .env: NOTION_EXTRA_DATA_SOURCE_IDS=id2,id3  (comma-separated, optional)
+EXTRA_SOURCE_IDS = [
+    part.strip() for part in (os.getenv("NOTION_EXTRA_DATA_SOURCE_IDS") or "").split(",")
+    if part.strip()
+]
 
 # Column names in the Notion table. They must match EXACTLY.
 # Note: "Reading Status " really has a space at the end in Notion!
@@ -48,12 +75,49 @@ def _client() -> Client:
     return Client(auth=NOTION_TOKEN)
 
 
-@lru_cache(maxsize=1)
-def get_valid_tags() -> list[str]:
-    """Ask Notion for the list of real tag names (fetched once, then remembered)."""
-    info = _client().data_sources.retrieve(data_source_id=NOTION_DATA_SOURCE_ID)
+def add_source_id() -> str:
+    """The list /add writes new stories to (list 1 if NOTION_ADD_DATA_SOURCE_ID is empty)."""
+    return NOTION_ADD_DATA_SOURCE_ID or NOTION_DATA_SOURCE_ID
+
+
+def list_number(source_id: str) -> int:
+    """Position of a list in the search order (1 = the main list), or 0 if unknown."""
+    sources = _search_sources()
+    return sources.index(source_id) + 1 if source_id in sources else 0
+
+
+def _search_sources() -> list:
+    """Every list the search reads: list 1 first, then the extra lists, then the /add list
+    (so a story just added is always searchable). No repeats."""
+    sources = []
+    for source_id in [NOTION_DATA_SOURCE_ID, *EXTRA_SOURCE_IDS, add_source_id()]:
+        if source_id and source_id not in sources:
+            sources.append(source_id)
+    return sources
+
+
+def get_valid_tags(source_id: str = None) -> list[str]:
+    """The real tag names of ONE list. No source_id means list 1.
+    Each list has its own tag options."""
+    return _fetch_tags(source_id or NOTION_DATA_SOURCE_ID)
+
+
+@lru_cache(maxsize=None)
+def _fetch_tags(source_id: str) -> list[str]:
+    """Ask Notion for the tag names of one list (fetched once, then remembered)."""
+    info = _client().data_sources.retrieve(data_source_id=source_id)
     options = info["properties"][COL_TAGS]["multi_select"]["options"]
     return [o["name"] for o in options]
+
+
+def get_all_tags() -> list[str]:
+    """Tag names of all searched lists together (list 1 first, no repeats)."""
+    tags = []
+    for source_id in _search_sources():
+        for tag in get_valid_tags(source_id):
+            if tag not in tags:
+                tags.append(tag)
+    return tags
 
 
 def _match_option(value: str, valid: list[str], label: str) -> str:
@@ -66,15 +130,15 @@ def _match_option(value: str, valid: list[str], label: str) -> str:
     raise ValueError(f"{label} '{value}' không hợp lệ. Giá trị hợp lệ: {', '.join(valid)}")
 
 
-def _tag_names_to_search(real_tag: str) -> list:
+def _tag_names_to_search(real_tag: str, valid_tags: list) -> list:
     """The tag itself, plus its synonyms (see TAG_SYNONYMS) that really exist in Notion.
-    Names come from Notion's own tag list, so they match exactly. A synonym that was
+    `valid_tags` is the real tag list of the list being searched. Names come from it, so they match exactly. A synonym that was
     renamed or deleted in Notion is skipped with a warning in the log, instead of
     making the whole search fail or silently return nothing."""
     group = next((g for g in TAG_SYNONYMS if real_tag.strip() in g), None)
     if group is None:
         return [real_tag]
-    by_stripped_name = {t.strip(): t for t in get_valid_tags()}
+    by_stripped_name = {t.strip(): t for t in valid_tags}
     names = [by_stripped_name[g] for g in group if g in by_stripped_name]
     missing = [g for g in group if g not in by_stripped_name]
     if missing:
@@ -83,15 +147,29 @@ def _tag_names_to_search(real_tag: str) -> list:
     return names or [real_tag]
 
 
-def build_filter(tags=None, reading_status=None, status=None, max_chapters=None, author=None):
-    """Turn the search conditions into a Notion filter. Every condition must match (AND)."""
+class NoMatchInThisList(Exception):
+    """A tag that this list does not have at all, so no story here can match."""
+
+
+def build_filter(tags=None, reading_status=None, status=None, max_chapters=None, author=None,
+                 source_id=None, skip_missing_tags=False):
+    """Turn the search conditions into a Notion filter. Every condition must match (AND).
+    source_id picks the list (None = list 1). With skip_missing_tags=True, a tag that this
+    list does not have raises NoMatchInThisList instead of ValueError (the caller has
+    already checked that the tag exists in at least one list)."""
     conditions = []
+    valid_tags = get_valid_tags(source_id) if tags else []  # only ask Notion when needed
 
     # Each tag the user asks for must be present on the story
     for tag in tags or []:
-        real_tag = _match_option(tag, get_valid_tags(), "Tag")
+        try:
+            real_tag = _match_option(tag, valid_tags, "Tag")
+        except ValueError:
+            if skip_missing_tags:
+                raise NoMatchInThisList(tag)
+            raise
         # If the tag has synonyms, the story needs ANY ONE of that group
-        names = _tag_names_to_search(real_tag)
+        names = _tag_names_to_search(real_tag, valid_tags)
         options = [{"property": COL_TAGS, "multi_select": {"contains": n}} for n in names]
         conditions.append(options[0] if len(options) == 1 else {"or": options})
 
@@ -135,7 +213,8 @@ def _to_story(page: dict) -> dict:
 def find_books(text: str, limit: int = MAX_RESULTS) -> dict:
     """Find books whose name OR author contains the text (used by /edit to pick a book).
     Returns {"books": [...], "has_more": True if there were more than `limit` matches}.
-    Each book includes its Notion page "id". Read-only."""
+    Each book includes its Notion page "id". Read-only. Looks in list 1 ONLY, because
+    /edit only changes list 1 (see notion_write._check_page_in_table)."""
     text = (text or "").strip()
     if not text:
         raise ValueError("Hãy nhập một phần tên truyện hoặc tên tác giả.")
@@ -167,8 +246,9 @@ def _link_key(url: str) -> str:
 
 def find_duplicates(name: str = None, link: str = None) -> list:
     """Find stories that already have this exact name or this link (used before /add).
-    Returns a list of {"id", "name", "author", "chapters", "link", "same"}, where "same"
-    says what matched. Read-only."""
+    Looks in ALL lists (list 1 and the extra ones). Returns a list of
+    {"id", "name", "author", "chapters", "link", "same", "list"}, where "same" says what
+    matched and "list" is the list number (1 = the main list). Read-only."""
     conditions = []
     if name and name.strip():
         conditions.append({"property": COL_NAME, "title": {"contains": name.strip()}})
@@ -177,50 +257,81 @@ def find_duplicates(name: str = None, link: str = None) -> list:
     if not conditions:
         return []
 
-    response = _client().data_sources.query(
-        data_source_id=NOTION_DATA_SOURCE_ID,
-        page_size=100,
-        filter={"or": conditions} if len(conditions) > 1 else conditions[0],
-    )
     found = []
-    for page in response["results"]:
-        story = _to_story(page)
-        stored_link = page["properties"][COL_LINK]["url"] or ""
-        same = []
-        if name and name.strip() and _same_text(name, story["name"]):
-            same.append("tên")
-        if link and link.strip() and stored_link and _link_key(link) == _link_key(stored_link):
-            same.append("link")
-        if same:
-            found.append({"id": page["id"], **story, "same": same})
+    for number, source_id in enumerate(_search_sources(), start=1):
+        response = _client().data_sources.query(
+            data_source_id=source_id,
+            page_size=100,
+            filter={"or": conditions} if len(conditions) > 1 else conditions[0],
+        )
+        for page in response["results"]:
+            story = _to_story(page)
+            stored_link = page["properties"][COL_LINK]["url"] or ""
+            same = []
+            if name and name.strip() and _same_text(name, story["name"]):
+                same.append("tên")
+            if link and link.strip() and stored_link and _link_key(link) == _link_key(stored_link):
+                same.append("link")
+            if same:
+                found.append({"id": page["id"], **story, "same": same, "list": number})
     return found
 
 
-def search_stories(tags=None, reading_status=None, status=None, max_chapters=None, author=None,
-                   skip=0, seed=None):
-    """Search the novel table.
-    Returns {"total": how many stories match, "skip": where this batch starts,
-    "shown": how many are returned, "remaining": how many are left after this batch,
-    "stories": at most 10 stories}. Read-only: never changes anything in Notion.
-
-    seed=None keeps Notion's own order. With a seed, all matches are shuffled in a
-    random order that depends only on the seed, so asking again with the same seed and
-    a larger skip gives the NEXT stories of the same shuffled list (no repeats)."""
-    query = {"data_source_id": NOTION_DATA_SOURCE_ID, "page_size": 100}
-    notion_filter = build_filter(tags, reading_status, status, max_chapters, author)
+def _query_all(source_id: str, notion_filter) -> list:
+    """Every story of ONE list that matches the filter (Notion sends up to 100 per page)."""
+    query = {"data_source_id": source_id, "page_size": 100}
     if notion_filter:
         query["filter"] = notion_filter
-
-    # Notion returns results in pages of up to 100. Keep asking until we have every
-    # match (the table is small), so we know the real total and can shuffle them all.
     client = _client()
     stories = []
     while True:
         response = client.data_sources.query(**query)
         stories.extend(_to_story(page) for page in response["results"])
         if not response["has_more"] or not response.get("next_cursor"):
-            break
+            return stories
         query["start_cursor"] = response["next_cursor"]
+
+
+def search_stories(tags=None, reading_status=None, status=None, max_chapters=None, author=None,
+                   skip=0, seed=None):
+    """Search ALL lists (list 1 + the extra lists) as if they were one table.
+    Returns {"total": how many stories match, "skip": where this batch starts,
+    "shown": how many are returned, "remaining": how many are left after this batch,
+    "stories": at most 10 stories}. Read-only: never changes anything in Notion.
+
+    The matches of every list are joined (list 1 first). A story with the same link in
+    two lists is counted once. seed=None keeps that order. With a seed, all matches are
+    shuffled in a random order that depends only on the seed, so asking again with the
+    same seed and a larger skip gives the NEXT stories of the same shuffled list."""
+    sources = _search_sources()
+    many = len(sources) > 1
+
+    # A tag must exist in at least one list, otherwise it is a typo (clear error message)
+    if tags:
+        all_tags = get_all_tags()
+        for tag in tags:
+            _match_option(tag, all_tags, "Tag")
+
+    # Each list is asked separately (each has its own tag options). We keep asking until
+    # we have every match (the tables are small), so we know the real total and can shuffle.
+    stories = []
+    seen_links = set()
+    for number, source_id in enumerate(sources, start=1):
+        try:
+            notion_filter = build_filter(tags, reading_status, status, max_chapters, author,
+                                         source_id=source_id, skip_missing_tags=many)
+        except NoMatchInThisList:
+            continue  # this list does not have the tag, so nothing here can match
+        try:
+            found = _query_all(source_id, notion_filter)
+        except Exception:
+            logger.warning("Notion: searching list %d of %d failed", number, len(sources))
+            raise
+        for story in found:
+            key = _link_key(story["link"])
+            if key not in seen_links:
+                seen_links.add(key)
+                stories.append(story)
 
     if seed is not None:
         random.Random(seed).shuffle(stories)

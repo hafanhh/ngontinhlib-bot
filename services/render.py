@@ -77,6 +77,7 @@ def render_result(result: dict, filters: dict, continued: bool = False) -> str:
         footer = f'\nCòn {result["remaining"]} truyện nữa, nhắn "xem thêm" để xem tiếp.'
 
     def build(with_tags: bool) -> str:
+        """Write the whole answer; with_tags=False leaves out the tags lines to make it shorter."""
         stories = [_story_lines(skip + i, s, with_tags) for i, s in enumerate(result["stories"], start=1)]
         return header + "\n\n" + "\n".join(stories) + "\n" + footer
 

@@ -1,3 +1,16 @@
+"""The Telegram bot: the program you start with `python bot.py`.
+
+What it does:
+- Reads the secrets from .env and stops with a clear message if one is missing.
+- Lets ONLY the owner (TELEGRAM_USER_ID) talk to it; everyone else is ignored.
+- A normal text message is a question about your novels: it goes to
+  services/gemini_agent.py, which asks Gemini what to search for and then reads Notion.
+- /add and /edit (flows/) are guided conversations that add or change a story.
+- Turns errors (Notion, Gemini, network) into short, friendly messages and logs them.
+
+Layout: bot.py -> flows/ and services/ and logtools/. Services never import the bot.
+"""
+
 import asyncio
 import logging
 import os
@@ -165,6 +178,7 @@ async def reject_stranger(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 def main() -> None:
+    """Start the bot: switch on logging, register the handlers, then keep polling Telegram."""
     logtools.setup_logging()  # first thing: so everything below is logged
     # Create the bot application using the token
     app = Application.builder().token(BOT_TOKEN).build()

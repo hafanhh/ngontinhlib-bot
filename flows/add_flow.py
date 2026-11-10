@@ -31,11 +31,13 @@ from services import notion_write as w
 
 logger = logging.getLogger(__name__)
 
-# The steps of the conversation (the bot is always "in" exactly one of them)
+# The steps of the conversation (the bot is always "in" exactly one of them), in order:
+#   NAME -> LINK -> (DUPLICATE, only if a similar story exists) -> AUTHOR -> CHAPTERS
+#   -> TAGS (tap buttons) -> STATUS (tap a button) -> CONFIRM (press Confirm to write)
 NAME, LINK, DUPLICATE, AUTHOR, CHAPTERS, TAGS, STATUS, CONFIRM = range(8)
 
 DATA_KEY = "add"  # where the answers so far are kept (per user, in memory)
-TAGS_PER_ROW = 3
+TAGS_PER_ROW = 3  # how many tag buttons fit on one row of the keyboard
 
 CANCEL_BUTTON = InlineKeyboardButton("❌ Cancel", callback_data="add:cancel")
 
@@ -46,9 +48,13 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
     friendly_error: turns an exception into a short Vietnamese message."""
 
     def is_owner(update: Update) -> bool:
+        """True only if the update comes from the owner. A second safety check on top of the
+        only_me filter: button presses (callbacks) are checked here too."""
         return update.effective_user is not None and update.effective_user.id == owner_id
 
     def data(context: ContextTypes.DEFAULT_TYPE) -> dict:
+        """The answers collected so far in this /add (kept in memory, one set per user).
+        Keys: name, link, author, chapters, tags, valid_tags, status, nonce."""
         return context.user_data.setdefault(DATA_KEY, {})
 
     async def drop_buttons(update: Update) -> None:
@@ -61,10 +67,13 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
     # ---- start -----------------------------------------------------------
 
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """/add: begin a fresh conversation and ask for the name. Closes /edit if it was open."""
         context.user_data.pop("edit", None)  # leave /edit if it was open (see flows/__init__.py)
         context.user_data[DATA_KEY] = {}  # always start from a clean slate
+        number = notion_search.list_number(notion_search.add_source_id())
+        where = f" vào List {number}" if number else ""
         await update.message.reply_text(
-            "Thêm truyện mới. Gõ /cancel bất cứ lúc nào để dừng (chưa ghi gì vào Notion).\n\n"
+            f"Thêm truyện mới{where}. Gõ /cancel bất cứ lúc nào để dừng (chưa ghi gì vào Notion).\n\n"
             "1/6 - Nhập TÊN truyện:"
         )
         return NAME
@@ -72,6 +81,7 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
     # ---- text steps ------------------------------------------------------
 
     async def got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Step 1: check the typed name (same rules as the real write), then ask for the link."""
         try:
             # build_column_update applies the same rules as the real write
             w.build_column_update("name", update.message.text)
@@ -83,6 +93,8 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         return LINK
 
     async def got_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Step 2: check the link, then look in ALL lists for the same name or link.
+        If something similar exists, warn and let the owner decide; otherwise ask for the author."""
         try:
             w.build_column_update("link", update.message.text)
         except ValueError as error:
@@ -106,7 +118,7 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
             lines = ["⚠️ Trong bảng đã có truyện giống:"]
             for dup in duplicates[:5]:
                 lines.append(f"- {dup['name']} | {dup['author']} | {dup['chapters']} chương "
-                             f"(trùng {' và '.join(dup['same'])})\n  {dup['link']}")
+                             f"(trùng {' và '.join(dup['same'])}, List {dup['list']})\n  {dup['link']}")
             lines.append("\nBạn vẫn muốn thêm truyện này?")
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton("➕ Add anyway", callback_data="add:dup_yes"), CANCEL_BUTTON,
@@ -118,6 +130,7 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         return AUTHOR
 
     async def dup_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """The owner pressed 'Add anyway' after the duplicate warning: carry on with the author."""
         if not is_owner(update):
             return DUPLICATE
         await update.callback_query.answer()
@@ -126,6 +139,7 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         return AUTHOR
 
     async def got_author(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Step 3: check the author, then ask for the number of chapters."""
         try:
             w.build_column_update("author", update.message.text)
         except ValueError as error:
@@ -136,6 +150,8 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         return CHAPTERS
 
     async def got_chapters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Step 4: check the chapter count, load the tags of the list we add to,
+        and show the tag buttons."""
         try:
             chapters = w.parse_chapters(update.message.text)
         except ValueError as error:
@@ -146,7 +162,9 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         d["tags"] = []
 
         try:
-            d["valid_tags"] = await asyncio.to_thread(notion_search.get_valid_tags)
+            d["valid_tags"] = await asyncio.to_thread(  # tags of the list we add to
+                notion_search.get_valid_tags, notion_search.add_source_id()
+            )
         except Exception as error:
             logger.exception("Lỗi khi lấy danh sách tag")
             context.user_data.pop(DATA_KEY, None)
@@ -161,11 +179,14 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
     # ---- tags (tap buttons to select) --------------------------------------
 
     def tags_text(d: dict) -> str:
+        """The text above the tag buttons, with the tags chosen so far."""
         chosen = ", ".join(t.strip() for t in d["tags"]) or "(chưa chọn)"
         return ("5/6 - Chọn TAGS: bấm để chọn hoặc bỏ chọn, xong thì bấm \"Done\".\n"
                 f"Đã chọn: {chosen}")
 
     def tags_keyboard(d: dict) -> InlineKeyboardMarkup:
+        """The tag buttons: one per tag of the add list (✅ on the chosen ones),
+        then Done and Cancel."""
         buttons = []
         for index, tag in enumerate(d["valid_tags"]):
             mark = "✅ " if tag in d["tags"] else ""
@@ -175,6 +196,7 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         return InlineKeyboardMarkup(rows)
 
     async def toggle_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """A tag button was tapped: select the tag, or unselect it if it was already chosen."""
         if not is_owner(update):
             return TAGS
         query = update.callback_query
@@ -195,6 +217,7 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         return TAGS
 
     async def tags_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """'Done' pressed on the tags: at least one tag is needed, then ask for the status."""
         if not is_owner(update):
             return TAGS
         query = update.callback_query
@@ -217,6 +240,8 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
     # ---- status and the final confirmation ------------------------------------
 
     async def got_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """A status button was tapped: show the final summary with Confirm / Cancel.
+        Nothing is written to Notion yet."""
         if not is_owner(update):
             return STATUS
         query = update.callback_query
@@ -248,6 +273,9 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
         return CONFIRM
 
     async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """The ONLY place that writes. Runs when the owner presses Confirm on the summary.
+        The button's one-time code is checked and used up BEFORE the write, so an old or
+        double-pressed button can never add the story twice."""
         if not is_owner(update):
             return CONFIRM
         query = update.callback_query
@@ -281,12 +309,15 @@ def build_add_handler(only_me, owner_id: int, friendly_error) -> ConversationHan
             await reply(f"{friendly_error(error)}\nHãy kiểm tra trong Notion trước khi thử lại, "
                         "để tránh thêm trùng.")
         else:
-            await reply(f"✅ Đã thêm: {result['name']}\n{result['url']}")
+            where = f" vào List {result['list']}" if result.get("list") else ""
+            code = f" (ID {result['code']})" if result.get("code") else ""
+            await reply(f"✅ Đã thêm{where}{code}: {result['name']}\n{result['url']}")
         return ConversationHandler.END
 
     # ---- cancelling and stray messages ----------------------------------------
 
     async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """/cancel or the Cancel button: stop /add. Nothing was written."""
         if not is_owner(update):
             return ConversationHandler.END
         context.user_data.pop(DATA_KEY, None)
